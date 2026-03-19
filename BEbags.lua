@@ -1,0 +1,1982 @@
+
+local mq = require('mq')
+local ImGui = require('ImGui')
+
+-- BEbags.lua
+-- Inventory + bank snapshot browser for AscendantEQ / MacroQuest.
+
+local SCRIPT_NAME = 'BEbags'
+local FIRST_BAG_SLOT = 23
+local LAST_BAG_SLOT = 32
+local FIRST_BANK_SLOT = 2000
+local LAST_BANK_SLOT = 2023
+local EQ_ICON_OFFSET = 500
+
+local animItems = mq.FindTextureAnimation('A_DragItem')
+local animBox = mq.FindTextureAnimation('A_RecessedBox')
+
+local configPath = (mq.configDir or '.') .. '/BEbags_settings.lua'
+local bankCachePath = (mq.configDir or '.') .. '/BEbags_bank_cache.lua'
+
+local state = {
+    running = true,
+    mode = 'packed',
+    hideEmptyInFull = false,
+    rightClickEnabled = true,
+    slotSize = 40,
+    columns = 14,
+    showBagInfo = false,
+    showItemBackground = true,
+    sortMode = 'bag',
+    showValueGlow = true,
+    showConfigWindow = false,
+    autoResizeMain = true,
+    mainNoScrollbar = true,
+    mainNoTitleBar = false,
+    showMainValueBar = true,
+    showMainWindow = true,
+    widthFudge = 56,
+    heightFudge = 20,
+    lastError = '',
+    statusMessage = 'Ready.',
+    showLauncher = true,
+    showQuickHelp = false,
+    pendingSell = nil,
+    showHelpDialog = false,
+    activeView = 'inventory', -- inventory | bank
+    bankCache = {
+        entries = {},
+        syncedAt = nil,
+        character = nil,
+        server = nil,
+    },
+    bankWasOpen = false,
+    bankAutoSyncEnabled = true,
+    bankLastSignature = nil,
+    showBankSyncButton = false,
+    showBankStatusText = false,
+    depositMode = false,
+    leftClickDelay = 0.24,
+    pendingLeftClick = nil,
+    diabloTheme = true,
+}
+
+local headerFont = nil
+local headerFontLoaded = false
+
+
+local function echo(msg)
+    mq.cmdf('/echo \\ag[%s]\\ax %s', SCRIPT_NAME, tostring(msg))
+    state.statusMessage = tostring(msg)
+end
+
+local function safeCall(fn, fallback)
+    local ok, result = pcall(fn)
+    if ok then return result end
+    return fallback
+end
+
+local function serializeValue(v, indent)
+    indent = indent or ''
+    local t = type(v)
+    if t == 'string' then
+        return string.format('%q', v)
+    elseif t == 'number' or t == 'boolean' then
+        return tostring(v)
+    elseif t == 'table' then
+        local nextIndent = indent .. '  '
+        local parts = {'{\n'}
+        for k, val in pairs(v) do
+            local key
+            if type(k) == 'string' and k:match('^[_%a][_%w]*$') then
+                key = k
+            else
+                key = '[' .. serializeValue(k, nextIndent) .. ']'
+            end
+            parts[#parts + 1] = string.format('%s%s = %s,\n', nextIndent, key, serializeValue(val, nextIndent))
+        end
+        parts[#parts + 1] = indent .. '}'
+        return table.concat(parts)
+    end
+    return 'nil'
+end
+
+local function saveSettings()
+    local keys = {
+        'mode', 'hideEmptyInFull', 'rightClickEnabled', 'slotSize', 'columns',
+        'showBagInfo', 'showItemBackground', 'sortMode', 'showValueGlow',
+        'showConfigWindow', 'autoResizeMain', 'mainNoScrollbar',
+        'mainNoTitleBar', 'showMainValueBar', 'showMainWindow', 'showLauncher',
+        'showHelpDialog', 'widthFudge', 'heightFudge', 'activeView',
+        'showBankSyncButton', 'showBankStatusText', 'depositMode', 'leftClickDelay', 'diabloTheme',
+    }
+
+    local f, err = io.open(configPath, 'w')
+    if not f then
+        echo('Failed to save settings: ' .. tostring(err))
+        return false
+    end
+    f:write('return {\n')
+    for _, key in ipairs(keys) do
+        f:write(string.format('  %s = %s,\n', key, serializeValue(state[key], '  ')))
+    end
+    f:write('}\n')
+    f:close()
+    return true
+end
+
+local function loadSettings()
+    local chunk = loadfile(configPath)
+    if not chunk then return false end
+    local ok, cfg = pcall(chunk)
+    if not ok or type(cfg) ~= 'table' then return false end
+    for k, v in pairs(cfg) do
+        if state[k] ~= nil then state[k] = v end
+    end
+    state.slotSize = math.max(24, math.min(56, math.floor(tonumber(state.slotSize) or 40)))
+    state.columns = math.max(4, math.min(24, math.floor(tonumber(state.columns) or 14)))
+    state.widthFudge = math.max(0, math.min(200, math.floor(tonumber(state.widthFudge) or 56)))
+    state.heightFudge = math.max(0, math.min(120, math.floor(tonumber(state.heightFudge) or 20)))
+    if state.activeView ~= 'inventory' and state.activeView ~= 'bank' then
+        state.activeView = 'inventory'
+    end
+    return true
+end
+
+local function saveBankCache()
+    local f, err = io.open(bankCachePath, 'w')
+    if not f then
+        echo('Failed to save bank cache: ' .. tostring(err))
+        return false
+    end
+    f:write('return ')
+    f:write(serializeValue(state.bankCache, ''))
+    f:write('\n')
+    f:close()
+    return true
+end
+
+local function loadBankCache()
+    local chunk = loadfile(bankCachePath)
+    if not chunk then return false end
+    local ok, data = pcall(chunk)
+    if not ok or type(data) ~= 'table' then return false end
+    if type(data.entries) ~= 'table' then
+        data.entries = {}
+    end
+    state.bankCache = data
+    return true
+end
+
+local function resetSettings()
+    state.mode = 'packed'
+    state.hideEmptyInFull = false
+    state.rightClickEnabled = true
+    state.slotSize = 40
+    state.columns = 14
+    state.showBagInfo = false
+    state.showItemBackground = true
+    state.sortMode = 'bag'
+    state.showValueGlow = true
+    state.showConfigWindow = false
+    state.autoResizeMain = true
+    state.mainNoScrollbar = true
+    state.mainNoTitleBar = false
+    state.showMainValueBar = true
+    state.showMainWindow = true
+    state.showLauncher = true
+    state.showHelpDialog = false
+    state.widthFudge = 56
+    state.heightFudge = 20
+    state.activeView = 'inventory'
+    state.showBankSyncButton = false
+    state.showBankStatusText = false
+    state.depositMode = false
+    state.leftClickDelay = 0.24
+    state.pendingLeftClick = nil
+    state.diabloTheme = true
+    saveSettings()
+    echo('Settings reset to defaults.')
+end
+
+local function getBankBag(slot)
+    local invslot = mq.TLO.InvSlot(slot)
+    if not invslot then return nil end
+    local item = safeCall(function() return invslot.Item end, nil)
+    if not item then return nil end
+    if safeCall(function() return item() end, nil) == nil then return nil end
+    return item
+end
+
+local function getBag(slot)
+    if slot >= FIRST_BANK_SLOT and slot <= LAST_BANK_SLOT then
+        return getBankBag(slot)
+    end
+
+    local inv = mq.TLO.Me.Inventory(slot)
+    if not inv then return nil end
+    if safeCall(function() return inv() end, nil) == nil then return nil end
+    return inv
+end
+
+local function getInventoryBagName(slot)
+    local bag = getBag(slot)
+    if not bag then return string.format('Bag %d', slot - 22) end
+    return safeCall(function()
+        local n = bag.Name()
+        if n == nil or n == '' then return string.format('Bag %d', slot - 22) end
+        return tostring(n)
+    end, string.format('Bag %d', slot - 22))
+end
+
+local function getBagSlotCount(slot)
+    local bag = getBag(slot)
+    if not bag then return 0 end
+    return safeCall(function() return tonumber(bag.Container()) or 0 end, 0)
+end
+
+local function getBagItem(slot, subslot)
+    local bag = getBag(slot)
+    if not bag then return nil end
+    local item = safeCall(function() return bag.Item(subslot) end, nil)
+    if not item then return nil end
+    if safeCall(function() return item() end, nil) == nil then return nil end
+    return item
+end
+
+local function getCursorItem()
+    local item = mq.TLO.Cursor
+    if not item then return nil end
+    if safeCall(function() return item() end, nil) == nil then return nil end
+    return item
+end
+
+local function getCursorName()
+    local item = getCursorItem()
+    if not item then return nil end
+    return safeCall(function()
+        local n = item.Name()
+        if n == nil or n == '' or tostring(n) == 'NULL' then return nil end
+        return tostring(n)
+    end, nil)
+end
+
+local function hasCursorItem()
+    return getCursorName() ~= nil
+end
+
+local function shouldIncludeEmptySlots()
+    if state.depositMode then
+        return true
+    end
+    return state.mode ~= 'packed'
+end
+
+local function getItemIcon(item)
+    if not item then return 0 end
+    return safeCall(function() return tonumber(item.Icon()) or 0 end, 0)
+end
+
+local function getItemStack(item)
+    if not item then return 0 end
+    return safeCall(function() return tonumber(item.Stack()) or 0 end, 0)
+end
+
+local function getItemStackSize(item)
+    if not item then return 0 end
+    return safeCall(function() return tonumber(item.StackSize()) or 0 end, 0)
+end
+
+local function isItemStackable(item)
+    if not item then return false end
+    return safeCall(function() return item.Stackable() end, false) and true or false
+end
+
+local function getItemID(item)
+    if not item then return 0 end
+    return safeCall(function() return tonumber(item.ID()) or 0 end, 0)
+end
+
+local function getItemValue(item)
+    if not item then return 0 end
+    return safeCall(function() return tonumber(item.Value()) or 0 end, 0)
+end
+
+local function getItemName(item, fallback)
+    if not item then return fallback or '(empty)' end
+    return safeCall(function()
+        local n = item.Name()
+        if n == nil or n == '' then return fallback or '(empty)' end
+        return tostring(n)
+    end, fallback or '(empty)')
+end
+
+local function getLauncherBagItem()
+    for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
+        local bag = getBag(bagSlot)
+        if bag and safeCall(function() return bag() end, nil) ~= nil then
+            return bag
+        end
+    end
+    return nil
+end
+
+local function getLauncherIconID()
+    local bag = getLauncherBagItem()
+    if not bag then return 0 end
+    return safeCall(function() return tonumber(bag.Icon()) or 0 end, 0)
+end
+
+local function itemnotifyLeft(packNum, subslot)
+    mq.cmdf('/itemnotify in pack%d %d leftmouseup', packNum, subslot)
+end
+
+local function itemnotifyRight(packNum, subslot)
+    mq.cmdf('/itemnotify in pack%d %d rightmouseup', packNum, subslot)
+end
+
+local function inspectItem(item)
+    if not item then return end
+    safeCall(function() item.Inspect() end, nil)
+end
+
+local function bankItemnotifyLeft(bankNum, subslot)
+    mq.cmdf('/itemnotify in bank%d %d leftmouseup', bankNum, subslot)
+end
+
+local function bankItemnotifyRight(bankNum, subslot)
+    mq.cmdf('/itemnotify in bank%d %d rightmouseup', bankNum, subslot)
+end
+
+local function selectItemForMerchantSell(packNum, subslot)
+    mq.cmdf('/nomodkey /itemnotify in pack%d %d leftmouseup', packNum, subslot)
+end
+
+local function sellSelectedMerchantItem(quantity)
+    quantity = tonumber(quantity) or 1
+    if quantity < 1 then quantity = 1 end
+    mq.cmdf('/sellitem %d', quantity)
+end
+
+local function merchantWindowOpen()
+    return safeCall(function()
+        return mq.TLO.Window('MerchantWnd').Open()
+    end, false) or false
+end
+
+local function bankWindowOpen()
+    return (safeCall(function() return mq.TLO.Window('BigBankWnd').Open() end, false) or false)
+        or (safeCall(function() return mq.TLO.Window('BankWnd').Open() end, false) or false)
+end
+
+
+local function queueMerchantSell(packNum, subslot, itemName, stackSize)
+    if not merchantWindowOpen() then
+        echo('Merchant window is not open.')
+        return
+    end
+    selectItemForMerchantSell(packNum, subslot)
+    state.pendingSell = {
+        packNum = packNum,
+        subslot = subslot,
+        itemName = itemName or '',
+        stackSize = tonumber(stackSize) or 1,
+        readyAt = os.clock() + 0.12,
+    }
+    echo(string.format('Queued vendor sell for %s x%d.', (itemName or 'item'), tonumber(stackSize) or 1))
+end
+
+local function formatMoney(cp)
+    cp = tonumber(cp) or 0
+    if cp < 0 then cp = 0 end
+    local pp = math.floor(cp / 1000)
+    local rem = cp % 1000
+    local gp = math.floor(rem / 100)
+    rem = rem % 100
+    local sp = math.floor(rem / 10)
+    local c = rem % 10
+    return string.format('%dpp %dgp %dsp %dcp', pp, gp, sp, c)
+end
+
+local function getCharacterName()
+    return safeCall(function()
+        local n = mq.TLO.Me.CleanName()
+        if n == nil or n == '' then n = mq.TLO.Me.Name() end
+        return tostring(n or '')
+    end, '')
+end
+
+local function getServerName()
+    return safeCall(function()
+        local n = mq.TLO.EverQuest.Server()
+        return tostring(n or '')
+    end, '')
+end
+
+local function getBankBagName(slotID)
+    local bankNum = slotID - FIRST_BANK_SLOT + 1
+    local bag = getBag(slotID)
+    if not bag then return string.format('Bank %d', bankNum) end
+    return safeCall(function()
+        local n = bag.Name()
+        if n == nil or n == '' then return string.format('Bank %d', bankNum) end
+        return tostring(n)
+    end, string.format('Bank %d', bankNum))
+end
+
+local function buildInventoryEntries()
+    local out = {}
+    local order = 0
+    for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
+        local bagName = getInventoryBagName(bagSlot)
+        local slotCount = getBagSlotCount(bagSlot)
+        local packNum = bagSlot - 22
+        for subslot = 1, slotCount do
+            order = order + 1
+            local item = getBagItem(bagSlot, subslot)
+            local isEmpty = (item == nil)
+            local include = false
+            if shouldIncludeEmptySlots() then
+                include = not (state.hideEmptyInFull and isEmpty)
+            else
+                include = not isEmpty
+            end
+            if include then
+                local stack = math.max(getItemStack(item), 1)
+                local itemValue = getItemValue(item)
+                out[#out + 1] = {
+                    source = 'inventory',
+                    interactive = true,
+                    packNum = packNum,
+                    subslot = subslot,
+                    bagName = bagName,
+                    item = item,
+                    isEmpty = isEmpty,
+                    order = order,
+                    itemName = getItemName(item, '(empty)'),
+                    stack = stack,
+                    itemValue = itemValue,
+                    totalValue = itemValue * stack,
+                    iconID = getItemIcon(item),
+                }
+            end
+        end
+    end
+    return out
+end
+
+local function buildLiveBankEntries()
+    local out = {}
+    local order = 0
+    for slotID = FIRST_BANK_SLOT, LAST_BANK_SLOT do
+        local bankNum = slotID - FIRST_BANK_SLOT + 1
+        local bagName = getBankBagName(slotID)
+        local slotCount = getBagSlotCount(slotID)
+        for subslot = 1, slotCount do
+            order = order + 1
+            local item = getBagItem(slotID, subslot)
+            local isEmpty = (item == nil)
+            local include = false
+            if shouldIncludeEmptySlots() then
+                include = not (state.hideEmptyInFull and isEmpty)
+            else
+                include = not isEmpty
+            end
+            if include then
+                local stack = math.max(getItemStack(item), 1)
+                local itemValue = getItemValue(item)
+                out[#out + 1] = {
+                    source = 'bank_live',
+                    interactive = true,
+                    bankNum = bankNum,
+                    subslot = subslot,
+                    bagName = bagName,
+                    item = item,
+                    isEmpty = isEmpty,
+                    order = order,
+                    itemName = getItemName(item, '(empty)'),
+                    stack = stack,
+                    itemValue = itemValue,
+                    totalValue = itemValue * stack,
+                    iconID = getItemIcon(item),
+                }
+            end
+        end
+    end
+    return out
+end
+
+local function getBankEntriesSignature(entries)
+    local parts = {}
+    for i, entry in ipairs(entries or {}) do
+        parts[#parts + 1] = table.concat({
+            tostring(entry.bankNum or ''),
+            tostring(entry.subslot or ''),
+            tostring(entry.itemName or ''),
+            tostring(entry.stack or 0),
+            tostring(entry.itemValue or 0),
+            tostring(entry.iconID or 0),
+            tostring(entry.isEmpty and 1 or 0),
+        }, '|')
+    end
+    return table.concat(parts, '\n')
+end
+
+local function syncBankCache(silent)
+    if not bankWindowOpen() then
+        if not silent then
+            echo('Open your bank first, then click Sync Bank.')
+        end
+        return false
+    end
+
+    local live = buildLiveBankEntries()
+    local cached = {}
+    for _, entry in ipairs(live) do
+        cached[#cached + 1] = {
+            source = 'bank_cache',
+            interactive = false,
+            bankNum = entry.bankNum,
+            subslot = entry.subslot,
+            bagName = entry.bagName,
+            isEmpty = entry.isEmpty,
+            order = entry.order,
+            itemName = entry.itemName,
+            stack = entry.stack,
+            itemValue = entry.itemValue,
+            totalValue = entry.totalValue,
+            iconID = entry.iconID,
+        }
+    end
+
+    state.bankCache.entries = cached
+    state.bankCache.syncedAt = os.date('%Y-%m-%d %H:%M:%S')
+    state.bankLastSignature = getBankEntriesSignature(live)
+    state.bankCache.character = getCharacterName()
+    state.bankCache.server = getServerName()
+
+    saveBankCache()
+    if not silent then
+        echo(string.format('Bank synced. Cached %d slots.', #cached))
+    else
+        state.statusMessage = string.format('Bank auto-synced. Cached %d slots.', #cached)
+    end
+    return true
+end
+
+local function pulseBankAutoSync()
+    local open = bankWindowOpen()
+
+    if not state.bankAutoSyncEnabled then
+        state.bankWasOpen = open
+        if not open then
+            state.bankLastSignature = nil
+        end
+        return
+    end
+
+    if open then
+        local live = buildLiveBankEntries()
+        local signature = getBankEntriesSignature(live)
+
+        if not state.bankWasOpen then
+            syncBankCache(true)
+            state.bankWasOpen = true
+            state.bankLastSignature = signature
+        elseif signature ~= state.bankLastSignature then
+            syncBankCache(true)
+            state.bankLastSignature = signature
+        end
+    elseif state.bankWasOpen then
+        state.bankWasOpen = false
+        state.bankLastSignature = nil
+    end
+end
+
+local function buildBankEntries()
+    if bankWindowOpen() then
+        local live = buildLiveBankEntries()
+        if #live > 0 then
+            return live, 'live'
+        end
+    end
+
+    local cacheEntries = state.bankCache and state.bankCache.entries or {}
+    local out = {}
+    for i, entry in ipairs(cacheEntries) do
+        out[i] = {
+            source = 'bank_cache',
+            interactive = false,
+            bankNum = entry.bankNum,
+            subslot = entry.subslot,
+            bagName = entry.bagName,
+            item = nil,
+            isEmpty = entry.isEmpty,
+            order = entry.order,
+            itemName = entry.itemName,
+            stack = entry.stack,
+            itemValue = entry.itemValue,
+            totalValue = entry.totalValue,
+            iconID = entry.iconID or 0,
+        }
+    end
+    return out, 'cached'
+end
+
+local function buildEntries()
+    if state.activeView == 'bank' then
+        return buildBankEntries()
+    end
+    return buildInventoryEntries(), 'live'
+end
+
+local function sortEntries(entries)
+    if state.sortMode == 'bag' then
+        table.sort(entries, function(a, b) return a.order < b.order end)
+    elseif state.sortMode == 'stack_value_desc' then
+        table.sort(entries, function(a, b)
+            if a.totalValue == b.totalValue then return a.order < b.order end
+            return a.totalValue > b.totalValue
+        end)
+    elseif state.sortMode == 'stack_value_asc' then
+        table.sort(entries, function(a, b)
+            if a.totalValue == b.totalValue then return a.order < b.order end
+            return a.totalValue < b.totalValue
+        end)
+    elseif state.sortMode == 'name_asc' then
+        table.sort(entries, function(a, b)
+            local an, bn = string.lower(a.itemName or ''), string.lower(b.itemName or '')
+            if an == bn then return a.order < b.order end
+            return an < bn
+        end)
+    elseif state.sortMode == 'name_desc' then
+        table.sort(entries, function(a, b)
+            local an, bn = string.lower(a.itemName or ''), string.lower(b.itemName or '')
+            if an == bn then return a.order < b.order end
+            return an > bn
+        end)
+    end
+end
+
+local function computeInventoryValue(entries)
+    local total = 0
+    for _, entry in ipairs(entries) do
+        if not entry.isEmpty then total = total + (entry.totalValue or 0) end
+    end
+    return total
+end
+
+local function getSlotUsage(bankMode)
+    local used = 0
+    local total = 0
+
+    if state.activeView == 'bank' then
+        if bankMode == 'cached' then
+            for _, entry in ipairs((state.bankCache and state.bankCache.entries) or {}) do
+                total = total + 1
+                if not entry.isEmpty then
+                    used = used + 1
+                end
+            end
+            return used, total
+        end
+
+        for slotID = FIRST_BANK_SLOT, LAST_BANK_SLOT do
+            local slotCount = getBagSlotCount(slotID)
+            if slotCount > 0 then
+                total = total + slotCount
+                for subslot = 1, slotCount do
+                    if getBagItem(slotID, subslot) ~= nil then
+                        used = used + 1
+                    end
+                end
+            end
+        end
+        return used, total
+    end
+
+    for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
+        local slotCount = getBagSlotCount(bagSlot)
+        if slotCount > 0 then
+            total = total + slotCount
+            for subslot = 1, slotCount do
+                if getBagItem(bagSlot, subslot) ~= nil then
+                    used = used + 1
+                end
+            end
+        end
+    end
+
+    return used, total
+end
+
+local function getViewLabel()
+    if state.activeView == 'bank' then
+        return 'Bank'
+    end
+    return 'Inventory'
+end
+
+local function getBankStatusText(bankMode)
+    if state.activeView ~= 'bank' then
+        return ''
+    end
+
+    if bankMode == 'live' and bankWindowOpen() then
+        return 'Bank source: live'
+    end
+
+    local syncedAt = state.bankCache and state.bankCache.syncedAt or nil
+    if syncedAt then
+        local who = ''
+        if state.bankCache.character and state.bankCache.character ~= '' then
+            who = state.bankCache.character
+            if state.bankCache.server and state.bankCache.server ~= '' then
+                who = who .. ' @ ' .. state.bankCache.server
+            end
+        end
+        if who ~= '' then
+            return string.format('Bank source: cached (%s, %s)', syncedAt, who)
+        end
+        return string.format('Bank source: cached (%s)', syncedAt)
+    end
+
+    return 'Bank source: no snapshot yet'
+end
+
+local function drawTooltip(entry, hasCursor, bankMode)
+    if not ImGui.IsItemHovered() then return end
+    ImGui.BeginTooltip()
+    if not entry.isEmpty then
+        ImGui.Text(entry.itemName)
+        if entry.stack > 1 then
+            ImGui.Text(string.format('Stack: %d', entry.stack))
+        end
+        ImGui.Text('Value: ' .. formatMoney(entry.itemValue))
+        if entry.stack > 1 then
+            ImGui.Text('Stack total: ' .. formatMoney(entry.totalValue))
+        end
+    else
+        ImGui.TextDisabled('Empty slot')
+    end
+    if state.showBagInfo then
+        ImGui.Separator()
+        if state.activeView == 'bank' then
+            ImGui.Text(string.format('Bank %d, Slot %d', entry.bankNum or 0, entry.subslot or 0))
+        else
+            ImGui.Text(string.format('Bag %d, Slot %d', entry.packNum or 0, entry.subslot or 0))
+        end
+        ImGui.Text(entry.bagName or '')
+    end
+    ImGui.Separator()
+
+    if state.activeView == 'bank' and not entry.interactive then
+        ImGui.TextColored(0.85, 0.82, 0.55, 1.0, 'Cached bank snapshot only')
+        ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Open your bank and click Sync Bank to refresh')
+    elseif hasCursor then
+        ImGui.TextColored(0.70, 0.95, 0.70, 1.0, 'Click to place or swap')
+    else
+        ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Left click: pick up/place/swap')
+        if state.rightClickEnabled then
+            ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Right click: clicky/use')
+            if state.activeView ~= 'bank' then
+                ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Ctrl + right click: sell full stack to merchant')
+            end
+        end
+    end
+
+    if state.activeView == 'bank' and bankMode == 'live' then
+        ImGui.Separator()
+        ImGui.TextColored(0.70, 0.95, 0.70, 1.0, 'Live bank mode active')
+    end
+    ImGui.EndTooltip()
+end
+
+local function drawSlotBackground()
+    if state.showItemBackground and animBox then
+        ImGui.DrawTextureAnimation(animBox, state.slotSize, state.slotSize)
+    end
+end
+
+local function drawStackText(stack)
+    if stack <= 1 then return end
+    local cx, cy = ImGui.GetCursorPos()
+    ImGui.SetWindowFontScale(0.68)
+    local s = tostring(stack)
+    local textWidth = ImGui.CalcTextSize(s)
+    ImGui.SetCursorPos(cx + math.max(0, state.slotSize - 1 - textWidth), cy + math.max(0, state.slotSize - 17))
+    ImGui.TextUnformatted(s)
+    ImGui.SetWindowFontScale(1.0)
+end
+
+local function pushGlowColors(entry, hasCursor)
+    if state.activeView == 'bank' and not entry.interactive then
+        ImGui.PushStyleColor(ImGuiCol.Button, 0.08, 0.12, 0.20, 0.20)
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.12, 0.18, 0.30, 0.28)
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.16, 0.24, 0.40, 0.36)
+        return
+    end
+
+    if hasCursor then
+        if entry.isEmpty then
+            ImGui.PushStyleColor(ImGuiCol.Button, 0.08, 0.28, 0.08, 0.22)
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.12, 0.40, 0.12, 0.34)
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.16, 0.48, 0.16, 0.42)
+        else
+            ImGui.PushStyleColor(ImGuiCol.Button, 0.28, 0.22, 0.08, 0.22)
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.42, 0.32, 0.10, 0.34)
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.50, 0.38, 0.12, 0.42)
+        end
+        return
+    end
+
+    if entry.isEmpty then
+        ImGui.PushStyleColor(ImGuiCol.Button, 0.00, 0.00, 0.00, 0.06)
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.10, 0.10, 0.10, 0.14)
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.14, 0.14, 0.14, 0.20)
+        return
+    end
+
+    if not state.showValueGlow then
+        ImGui.PushStyleColor(ImGuiCol.Button, 0.00, 0.00, 0.00, 0.10)
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.22, 0.22, 0.22, 0.18)
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.28, 0.28, 0.28, 0.24)
+        return
+    end
+
+    if entry.totalValue >= 100000 then
+        ImGui.PushStyleColor(ImGuiCol.Button, 0.78, 0.62, 0.10, 0.22)
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.95, 0.78, 0.16, 0.34)
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, 1.00, 0.84, 0.20, 0.42)
+    elseif entry.totalValue >= 10000 then
+        ImGui.PushStyleColor(ImGuiCol.Button, 0.12, 0.62, 0.20, 0.22)
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.18, 0.84, 0.28, 0.34)
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.22, 0.94, 0.34, 0.42)
+    else
+        ImGui.PushStyleColor(ImGuiCol.Button, 0.00, 0.00, 0.00, 0.10)
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.22, 0.22, 0.22, 0.18)
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.28, 0.28, 0.28, 0.24)
+    end
+end
+
+local function drawEntry(entry, index, hasCursor, bankMode)
+    local iconID = tonumber(entry.iconID or 0) or 0
+    local cx, cy = ImGui.GetCursorPos()
+
+    drawSlotBackground()
+
+    if iconID > 0 and animItems then
+        ImGui.SetCursorPos(cx, cy)
+        animItems:SetTextureCell(iconID - EQ_ICON_OFFSET)
+        ImGui.DrawTextureAnimation(animItems, state.slotSize, state.slotSize)
+    end
+
+    if entry.stack > 1 then
+        ImGui.SetCursorPos(cx, cy)
+        drawStackText(entry.stack)
+    end
+
+    ImGui.SetCursorPos(cx, cy)
+    pushGlowColors(entry, hasCursor)
+
+    local labelPrefix = state.activeView == 'bank' and 'bank' or 'flat'
+    local slotA = entry.bankNum or entry.packNum or 0
+    local label = string.format('##%s_%d_%d_%d', labelPrefix, slotA, entry.subslot or 0, index)
+    local clickedLeft = ImGui.Button(label, state.slotSize, state.slotSize)
+    if clickedLeft and entry.interactive then
+        local now = os.clock()
+        if state.pendingLeftClick
+            and state.pendingLeftClick.view == state.activeView
+            and ((state.activeView == 'bank' and state.pendingLeftClick.bankNum == entry.bankNum)
+                or (state.activeView ~= 'bank' and state.pendingLeftClick.packNum == entry.packNum))
+            and state.pendingLeftClick.subslot == entry.subslot
+            and (now - (state.pendingLeftClick.startedAt or 0)) <= (state.leftClickDelay or 0.24) then
+            state.pendingLeftClick = nil
+            inspectItem(entry.item)
+            echo('Inspect opened for ' .. (entry.itemName or 'item') .. '.')
+        else
+            state.pendingLeftClick = {
+                view = state.activeView,
+                packNum = entry.packNum,
+                bankNum = entry.bankNum,
+                subslot = entry.subslot,
+                startedAt = now,
+            }
+        end
+    end
+
+    if entry.item and entry.interactive and state.rightClickEnabled and ImGui.IsItemHovered() and ImGui.IsMouseReleased(1) then
+        local ctrlDown = (safeCall(function() return ImGui.IsKeyDown(ImGuiKey.LeftCtrl) end, false) or false)
+            or (safeCall(function() return ImGui.IsKeyDown(ImGuiKey.RightCtrl) end, false) or false)
+
+        if ctrlDown and state.activeView ~= 'bank' then
+            queueMerchantSell(entry.packNum, entry.subslot, entry.itemName, entry.stack)
+        else
+            if state.activeView == 'bank' then
+                bankItemnotifyRight(entry.bankNum, entry.subslot)
+            else
+                itemnotifyRight(entry.packNum, entry.subslot)
+            end
+        end
+    end
+
+    drawTooltip(entry, hasCursor, bankMode)
+    ImGui.PopStyleColor(3)
+end
+
+local function doAction(msg, fn)
+    fn()
+    saveSettings()
+    echo(msg)
+end
+
+local function setDepositMode(enabled, quiet)
+    enabled = not not enabled
+    if state.depositMode == enabled then
+        return
+    end
+    state.depositMode = enabled
+    saveSettings()
+    if not quiet then
+        if enabled then
+            echo('Deposit mode enabled. Empty slots are now visible for the current view.')
+        else
+            echo('Deposit mode disabled.')
+        end
+    end
+end
+
+local function pulseDepositMode()
+    if state.depositMode and not hasCursorItem() then
+        setDepositMode(false, true)
+        state.statusMessage = 'Deposit mode ended because your cursor is empty.'
+    end
+end
+
+local function findFirstStackableInventoryTarget(cursorItem)
+    if not cursorItem or not isItemStackable(cursorItem) then
+        return nil, nil
+    end
+
+    local cursorID = getItemID(cursorItem)
+    local cursorName = string.lower(getItemName(cursorItem, '') or '')
+    for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
+        local slotCount = getBagSlotCount(bagSlot)
+        if slotCount > 0 then
+            local packNum = bagSlot - 22
+            for subslot = 1, slotCount do
+                local item = getBagItem(bagSlot, subslot)
+                if item then
+                    local sameItem = false
+                    local itemID = getItemID(item)
+                    if cursorID > 0 and itemID > 0 then
+                        sameItem = (cursorID == itemID)
+                    else
+                        sameItem = string.lower(getItemName(item, '') or '') == cursorName
+                    end
+
+                    if sameItem and isItemStackable(item) and getItemStack(item) < getItemStackSize(item) then
+                        return packNum, subslot
+                    end
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function findFirstEmptyInventorySlot()
+    for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
+        local slotCount = getBagSlotCount(bagSlot)
+        if slotCount > 0 then
+            local packNum = bagSlot - 22
+            for subslot = 1, slotCount do
+                if getBagItem(bagSlot, subslot) == nil then
+                    return packNum, subslot
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function findFirstStackableBankTarget(cursorItem)
+    if not cursorItem or not isItemStackable(cursorItem) then
+        return nil, nil
+    end
+
+    local cursorID = getItemID(cursorItem)
+    local cursorName = string.lower(getItemName(cursorItem, '') or '')
+    for slotID = FIRST_BANK_SLOT, LAST_BANK_SLOT do
+        local slotCount = getBagSlotCount(slotID)
+        if slotCount > 0 then
+            local bankNum = slotID - FIRST_BANK_SLOT + 1
+            for subslot = 1, slotCount do
+                local item = getBagItem(slotID, subslot)
+                if item then
+                    local sameItem = false
+                    local itemID = getItemID(item)
+                    if cursorID > 0 and itemID > 0 then
+                        sameItem = (cursorID == itemID)
+                    else
+                        sameItem = string.lower(getItemName(item, '') or '') == cursorName
+                    end
+
+                    if sameItem and isItemStackable(item) and getItemStack(item) < getItemStackSize(item) then
+                        return bankNum, subslot
+                    end
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function findFirstEmptyBankSlot()
+    for slotID = FIRST_BANK_SLOT, LAST_BANK_SLOT do
+        local slotCount = getBagSlotCount(slotID)
+        if slotCount > 0 then
+            local bankNum = slotID - FIRST_BANK_SLOT + 1
+            for subslot = 1, slotCount do
+                if getBagItem(slotID, subslot) == nil then
+                    return bankNum, subslot
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function performAutoDeposit()
+    local cursorItem = getCursorItem()
+    local cursorName = getCursorName()
+    if not cursorItem or not cursorName then
+        echo('There is no item on your cursor to deposit.')
+        return false
+    end
+
+    if state.activeView == 'bank' then
+        if not bankWindowOpen() then
+            echo('Bank deposit requires the bank window to be open.')
+            return false
+        end
+
+        local bankNum, subslot = findFirstStackableBankTarget(cursorItem)
+        if bankNum and subslot then
+            bankItemnotifyLeft(bankNum, subslot)
+            state.statusMessage = string.format('Depositing %s into existing stack in Bank %d, Slot %d.', cursorName, bankNum, subslot)
+            return true
+        end
+
+        bankNum, subslot = findFirstEmptyBankSlot()
+        if not bankNum then
+            echo('No empty bank bag slots were found.')
+            return false
+        end
+
+        bankItemnotifyLeft(bankNum, subslot)
+        state.statusMessage = string.format('Depositing %s into Bank %d, Slot %d.', cursorName, bankNum, subslot)
+        return true
+    end
+
+    local packNum, subslot = findFirstStackableInventoryTarget(cursorItem)
+    if packNum and subslot then
+        itemnotifyLeft(packNum, subslot)
+        state.statusMessage = string.format('Depositing %s into existing stack in Bag %d, Slot %d.', cursorName, packNum, subslot)
+        return true
+    end
+
+    packNum, subslot = findFirstEmptyInventorySlot()
+    if not packNum then
+        echo('No empty inventory bag slots were found.')
+        return false
+    end
+
+    itemnotifyLeft(packNum, subslot)
+    state.statusMessage = string.format('Depositing %s into Bag %d, Slot %d.', cursorName, packNum, subslot)
+    return true
+end
+
+local function drawTopSortButtons()
+    local function sortBtn(label, mode, msg)
+        local isActive = (state.sortMode == mode)
+        if isActive then
+            ImGui.PushStyleColor(ImGuiCol.Button, 0.18, 0.45, 0.18, 0.45)
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.18, 0.55, 0.18, 0.55)
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.18, 0.65, 0.18, 0.65)
+        end
+
+        local clicked = ImGui.SmallButton(label)
+
+        if isActive then
+            ImGui.PopStyleColor(3)
+        end
+
+        if clicked then
+            state.sortMode = mode
+            saveSettings()
+            echo(msg)
+        end
+    end
+
+    sortBtn('Bag Order', 'bag', 'Sort set to bag order.')
+    ImGui.SameLine()
+    sortBtn('Value High->Low', 'stack_value_desc', 'Sort set to value high to low.')
+    ImGui.SameLine()
+    sortBtn('Value Low->High', 'stack_value_asc', 'Sort set to value low to high.')
+    ImGui.SameLine()
+    sortBtn('Name A->Z', 'name_asc', 'Sort set to name A to Z.')
+    ImGui.SameLine()
+    sortBtn('Name Z->A', 'name_desc', 'Sort set to name Z to A.')
+end
+
+local function setMainWindowSize(entryCount)
+    if not state.autoResizeMain then
+        return
+    end
+
+    local cols = math.max(1, state.columns)
+    local rows = math.max(1, math.ceil(entryCount / cols))
+
+    local itemSpacingX = 4
+    local itemSpacingY = 4
+    local scrollbarAllowance = state.mainNoScrollbar and 0 or 20
+    local titleBarAllowance = state.mainNoTitleBar and 0 or 28
+    local valueBarAllowance = state.showMainValueBar and 26 or 0
+    local toolbarAllowance = 52
+
+    local width = (cols * state.slotSize)
+        + ((cols - 1) * itemSpacingX)
+        + scrollbarAllowance
+        + state.widthFudge
+
+    local height = (rows * state.slotSize)
+        + ((rows - 1) * itemSpacingY)
+        + titleBarAllowance
+        + valueBarAllowance
+        + toolbarAllowance
+        + state.heightFudge
+
+    ImGui.SetNextWindowSize(width, height, ImGuiCond.Always)
+end
+
+local pushDiabloWindowStyle
+local popDiabloWindowStyle
+local drawDiabloHeader
+
+local function drawConfigWindow(entries, bankMode)
+    if not state.showConfigWindow then return end
+
+    ImGui.SetNextWindowPos(120, 120, ImGuiCond.Appearing)
+    ImGui.SetNextWindowSize(700, 760, ImGuiCond.FirstUseEver)
+    local pushedColors, pushedVars = pushDiabloWindowStyle()
+    local shouldDraw = ImGui.Begin('BEbags Config', true, bit32.bor(ImGuiWindowFlags.NoTitleBar, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse))
+    if shouldDraw then
+        if drawDiabloHeader('BEbags Config', 'showConfigWindow', 'Config window closed.', 'Forge your layout') then
+            ImGui.End()
+            popDiabloWindowStyle(pushedColors, pushedVars)
+            return
+        end
+
+        ImGui.BeginChild('##config_content', 0, 0, false)
+
+        local totalInventoryValue = computeInventoryValue(entries)
+        local usedSlots, totalSlots = getSlotUsage(bankMode)
+        local cursorName = getCursorName()
+
+        ImGui.Text('BEbags Configuration')
+        ImGui.Separator()
+
+        ImGui.Text('Current View: ' .. getViewLabel())
+        if state.activeView == 'bank' and state.showBankStatusText then
+            ImGui.TextWrapped(getBankStatusText(bankMode))
+        end
+
+        ImGui.Text('Mode')
+        if ImGui.SmallButton('Packed') then doAction('Mode set to packed.', function() state.mode = 'packed' end) end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Full') then doAction('Mode set to full.', function() state.mode = 'full' end) end
+        ImGui.SameLine()
+        ImGui.Text('Current: ' .. state.mode)
+
+        ImGui.Text('Layout')
+        if ImGui.SmallButton('Cols -1') then doAction('Columns decreased.', function() state.columns = math.max(4, state.columns - 1) end) end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Cols +1') then doAction('Columns increased.', function() state.columns = math.min(24, state.columns + 1) end) end
+        ImGui.SameLine()
+        ImGui.Text('Columns: ' .. tostring(state.columns))
+
+        if ImGui.SmallButton('Size -2') then doAction('Slot size decreased.', function() state.slotSize = math.max(24, state.slotSize - 2) end) end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Size +2') then doAction('Slot size increased.', function() state.slotSize = math.min(56, state.slotSize + 2) end) end
+        ImGui.SameLine()
+        ImGui.Text('Slot Size: ' .. tostring(state.slotSize))
+
+        if ImGui.SmallButton('Width -8') then doAction('Width fudge decreased.', function() state.widthFudge = math.max(0, state.widthFudge - 8) end) end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Width +8') then doAction('Width fudge increased.', function() state.widthFudge = math.min(200, state.widthFudge + 8) end) end
+        ImGui.SameLine()
+        ImGui.Text('Width Fudge: ' .. tostring(state.widthFudge))
+
+        if ImGui.SmallButton('Height -4') then doAction('Height fudge decreased.', function() state.heightFudge = math.max(0, state.heightFudge - 4) end) end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Height +4') then doAction('Height fudge increased.', function() state.heightFudge = math.min(120, state.heightFudge + 4) end) end
+        ImGui.SameLine()
+        ImGui.Text('Height Fudge: ' .. tostring(state.heightFudge))
+
+        if ImGui.SmallButton(state.autoResizeMain and 'Auto Resize: ON' or 'Auto Resize: OFF') then
+            doAction('Toggled auto resize.', function() state.autoResizeMain = not state.autoResizeMain end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.mainNoScrollbar and 'Scrollbar: OFF' or 'Scrollbar: ON') then
+            doAction('Toggled main scrollbar.', function() state.mainNoScrollbar = not state.mainNoScrollbar end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.mainNoTitleBar and 'Native Title: OFF' or 'Native Title: ON') then
+            doAction('Toggled native title bar preference.', function() state.mainNoTitleBar = not state.mainNoTitleBar end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.showMainValueBar and 'Value Bar: ON' or 'Value Bar: OFF') then
+            doAction('Toggled main value bar.', function() state.showMainValueBar = not state.showMainValueBar end)
+        end
+
+        ImGui.Text('Visibility / Behavior')
+        if ImGui.SmallButton(state.hideEmptyInFull and 'Full Empty: Hidden' or 'Full Empty: Shown') then
+            doAction('Toggled full empty visibility.', function() state.hideEmptyInFull = not state.hideEmptyInFull end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.showBagInfo and 'Bag Info: ON' or 'Bag Info: OFF') then
+            doAction('Toggled bag info.', function() state.showBagInfo = not state.showBagInfo end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.showItemBackground and 'Slot BG: ON' or 'Slot BG: OFF') then
+            doAction('Toggled slot background.', function() state.showItemBackground = not state.showItemBackground end)
+        end
+
+        if ImGui.SmallButton(state.showValueGlow and 'Value Glow: ON' or 'Value Glow: OFF') then
+            doAction('Toggled value glow.', function() state.showValueGlow = not state.showValueGlow end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.rightClickEnabled and 'Right Click: ON' or 'Right Click: OFF') then
+            doAction('Toggled right click.', function() state.rightClickEnabled = not state.rightClickEnabled end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.diabloTheme and 'Theme: Diablo' or 'Theme: Classic') then
+            doAction('Toggled theme.', function() state.diabloTheme = not state.diabloTheme end)
+        end
+
+        ImGui.Text('Views')
+        if ImGui.SmallButton(state.activeView == 'inventory' and 'Inventory: ON' or 'Inventory') then
+            doAction('Switched to inventory view.', function() state.activeView = 'inventory' end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.activeView == 'bank' and 'Bank: ON' or 'Bank') then
+            doAction('Switched to bank view.', function() state.activeView = 'bank' end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.depositMode and 'Manual Deposit Mode: ON' or 'Manual Deposit Mode: OFF') then
+            setDepositMode(not state.depositMode)
+        end
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('Manual fallback: shows empty slots even while you normally use Packed mode. It turns itself off after your cursor is empty.')
+        end
+
+        ImGui.Text('Bank View')
+        if ImGui.SmallButton(state.showBankSyncButton and 'Show Sync Button: ON' or 'Show Sync Button: OFF') then
+            doAction('Toggled bank sync button visibility.', function() state.showBankSyncButton = not state.showBankSyncButton end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.showBankStatusText and 'Show Status Text: ON' or 'Show Status Text: OFF') then
+            doAction('Toggled bank status text visibility.', function() state.showBankStatusText = not state.showBankStatusText end)
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton(state.bankAutoSyncEnabled and 'Auto Sync: ON' or 'Auto Sync: OFF') then
+            doAction('Toggled bank auto sync.', function() state.bankAutoSyncEnabled = not state.bankAutoSyncEnabled end)
+        end
+        if state.showBankSyncButton then
+            if ImGui.SmallButton('Sync Bank Now') then
+                syncBankCache()
+            end
+        end
+
+        ImGui.Text('Sort')
+        if ImGui.SmallButton('Bag Order') then doAction('Sort set to bag order.', function() state.sortMode = 'bag' end) end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Value High->Low') then doAction('Sort set to value high to low.', function() state.sortMode = 'stack_value_desc' end) end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Value Low->High') then doAction('Sort set to value low to high.', function() state.sortMode = 'stack_value_asc' end) end
+        if ImGui.SmallButton('Name A->Z') then doAction('Sort set to name A to Z.', function() state.sortMode = 'name_asc' end) end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Name Z->A') then doAction('Sort set to name Z to A.', function() state.sortMode = 'name_desc' end) end
+
+        ImGui.Separator()
+        if ImGui.SmallButton('Save Settings') then saveSettings(); echo('Settings saved.') end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Reset Defaults') then resetSettings(); echo('Settings reset.') end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Close Config') then state.showConfigWindow = false; saveSettings(); echo('Config closed.') end
+
+        ImGui.EndChild()
+
+        ImGui.Separator()
+        ImGui.Text('Visible Slots: ' .. tostring(#entries))
+        ImGui.Text(string.format('Slots Used / Total: %d/%d', usedSlots, totalSlots))
+        ImGui.Text('Total Visible Value: ' .. formatMoney(totalInventoryValue))
+        ImGui.Text('Status: ' .. tostring(state.statusMessage))
+        if cursorName then
+            ImGui.Text('Cursor: ' .. cursorName)
+        else
+            ImGui.Text('Cursor: empty')
+        end
+        if state.activeView == 'bank' and state.showBankStatusText then
+            ImGui.TextWrapped(getBankStatusText(bankMode))
+        end
+        if state.lastError ~= '' then
+            ImGui.TextColored(1.0, 0.5, 0.5, 1.0, 'Last UI error: ' .. state.lastError)
+        end
+    end
+    ImGui.End()
+    popDiabloWindowStyle(pushedColors, pushedVars)
+end
+
+local function drawLauncher()
+    if not state.showLauncher then
+        return
+    end
+
+    local flags = bit32.bor(
+        ImGuiWindowFlags.NoTitleBar,
+        ImGuiWindowFlags.AlwaysAutoResize,
+        ImGuiWindowFlags.NoScrollbar,
+        ImGuiWindowFlags.NoResize
+    )
+
+    ImGui.SetNextWindowBgAlpha(0.6)
+
+    local shouldDraw = ImGui.Begin('BEbagsLauncher', true, flags)
+    if shouldDraw then
+        local launcherIconID = getLauncherIconID()
+        local buttonSize = 40
+        local clickedLeft = false
+
+        if launcherIconID > 0 and animItems then
+            local startX, startY = ImGui.GetCursorPos()
+
+            if animBox then
+                ImGui.DrawTextureAnimation(animBox, buttonSize, buttonSize)
+                ImGui.SetCursorPos(startX, startY)
+            end
+
+            animItems:SetTextureCell(launcherIconID - EQ_ICON_OFFSET)
+            ImGui.DrawTextureAnimation(animItems, buttonSize, buttonSize)
+            ImGui.SetCursorPos(startX, startY)
+
+            ImGui.PushStyleColor(ImGuiCol.Button, 0.00, 0.00, 0.00, 0.05)
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.90, 0.82, 0.28, 0.18)
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.95, 0.86, 0.32, 0.24)
+            clickedLeft = ImGui.Button('##bebags_launcher_icon', buttonSize, buttonSize)
+            ImGui.PopStyleColor(3)
+        else
+            clickedLeft = ImGui.Button('BAG', buttonSize, buttonSize)
+        end
+
+        local launcherHovered = ImGui.IsItemHovered()
+        local launcherRightReleased = launcherHovered and ImGui.IsMouseReleased(1)
+        local launcherMiddleReleased = launcherHovered and ImGui.IsMouseReleased(2)
+
+        if clickedLeft then
+            state.showMainWindow = not state.showMainWindow
+            saveSettings()
+            echo(state.showMainWindow and 'Main window shown.' or 'Main window hidden.')
+        end
+
+        if launcherRightReleased then
+            state.showConfigWindow = not state.showConfigWindow
+            ImGui.SetNextWindowPos(120, 120, ImGuiCond.Appearing)
+            saveSettings()
+            echo(state.showConfigWindow and 'Config window opened.' or 'Config window hidden.')
+        end
+
+        if launcherMiddleReleased then
+            state.showQuickHelp = not state.showQuickHelp
+        end
+
+        if launcherHovered then
+            ImGui.BeginTooltip()
+            ImGui.Text('BEbags')
+            ImGui.Text('Left click: Show/Hide Bags')
+            ImGui.Text('Right click: Open/Close Config')
+            ImGui.Text('Middle click: Quick Help')
+            ImGui.EndTooltip()
+        end
+
+        if state.showQuickHelp then
+            ImGui.Separator()
+            ImGui.Text('Quick Actions')
+            if ImGui.SmallButton(state.mode == 'packed' and 'Mode: Packed' or 'Mode: Full') then
+                state.mode = (state.mode == 'packed') and 'full' or 'packed'
+                saveSettings()
+                echo('Mode set to ' .. state.mode .. '.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Toggle packed/full mode')
+            end
+
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.sortMode == 'bag' and 'Bag Order' or 'Sort Reset') then
+                state.sortMode = 'bag'
+                saveSettings()
+                echo('Sort set to bag order.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Reset sorting to bag order')
+            end
+
+            if ImGui.SmallButton(state.showMainValueBar and 'Value Bar: ON' or 'Value Bar: OFF') then
+                state.showMainValueBar = not state.showMainValueBar
+                saveSettings()
+                echo(state.showMainValueBar and 'Main value bar enabled.' or 'Main value bar disabled.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Toggle total inventory value display')
+            end
+
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.rightClickEnabled and 'Right Click: ON' or 'Right Click: OFF') then
+                state.rightClickEnabled = not state.rightClickEnabled
+                saveSettings()
+                echo(state.rightClickEnabled and 'Right click enabled.' or 'Right click disabled.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Toggle right-click item use')
+            end
+
+            if ImGui.SmallButton('Inventory') then
+                state.activeView = 'inventory'
+                saveSettings()
+                echo('Switched to inventory view.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Show your carried bag view')
+            end
+
+            ImGui.SameLine()
+            if ImGui.SmallButton('Bank') then
+                state.activeView = 'bank'
+                saveSettings()
+                echo('Switched to bank view.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Show your live bank if open, otherwise your last synced bank snapshot')
+            end
+
+            ImGui.SameLine()
+            if ImGui.SmallButton('Deposit') then
+                performAutoDeposit()
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Places the item on your cursor into the first empty bag slot in the current view. Bank deposits require the bank window to be open.')
+            end
+
+            if state.showBankSyncButton then
+                if ImGui.SmallButton('Sync Bank') then
+                    syncBankCache()
+                end
+                if ImGui.IsItemHovered() then
+                    ImGui.SetTooltip('Refresh your bank snapshot while a bank window is open')
+                end
+                ImGui.SameLine()
+            end
+            if ImGui.SmallButton('Open Config') then
+                state.showConfigWindow = true
+                ImGui.SetNextWindowPos(120, 120, ImGuiCond.Appearing)
+                saveSettings()
+                echo('Config window opened.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Open the full config window')
+            end
+
+            if ImGui.SmallButton('Help') then
+                state.showHelpDialog = true
+                saveSettings()
+                echo('Help dialog opened.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Open the plain-language help dialog')
+            end
+
+            ImGui.SameLine()
+            if ImGui.SmallButton('Hide Launcher') then
+                state.showLauncher = false
+                saveSettings()
+                echo('Launcher hidden. Use /BEbags launcher show to bring it back.')
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Hide the floating launcher button')
+            end
+        end
+    end
+    ImGui.End()
+end
+
+local function drawViewButtons(bankMode)
+    local function drawViewButton(label, active, onClick, tooltip)
+        if active then
+            ImGui.PushStyleColor(ImGuiCol.Button, 0.18, 0.45, 0.18, 0.45)
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.18, 0.55, 0.18, 0.55)
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.18, 0.65, 0.18, 0.65)
+        end
+        local clicked = ImGui.SmallButton(label)
+        if active then
+            ImGui.PopStyleColor(3)
+        end
+        if clicked then
+            onClick()
+        end
+        if ImGui.IsItemHovered() and tooltip then
+            ImGui.SetTooltip(tooltip)
+        end
+    end
+
+    drawViewButton('Inventory', state.activeView == 'inventory', function()
+        state.activeView = 'inventory'
+        saveSettings()
+        echo('Switched to inventory view.')
+    end, 'Show your carried bags')
+
+    ImGui.SameLine()
+    drawViewButton('Bank', state.activeView == 'bank', function()
+        state.activeView = 'bank'
+        saveSettings()
+        echo('Switched to bank view.')
+    end, 'Show live bank contents while bank is open, otherwise your last synced bank snapshot')
+
+    ImGui.SameLine()
+    drawViewButton('Deposit', false, function()
+        performAutoDeposit()
+    end, 'Place the item on your cursor into the first empty bag slot in bag order for the current view. Bank deposits require the bank window to be open.')
+
+    if state.showBankSyncButton then
+        ImGui.SameLine()
+        if ImGui.SmallButton('Sync Bank') then
+            syncBankCache()
+        end
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('Open your bank first, then click this to refresh the snapshot used from anywhere')
+        end
+    end
+
+    if state.showBankStatusText then
+        ImGui.SameLine()
+        if state.activeView == 'bank' then
+            ImGui.TextColored(0.82, 0.90, 1.00, 1.0, getBankStatusText(bankMode))
+        else
+            ImGui.TextColored(0.82, 0.90, 1.00, 1.0, 'View: Inventory')
+        end
+    end
+end
+
+
+
+local function tryLoadHeaderFont()
+    if headerFontLoaded then return end
+    headerFontLoaded = true
+
+    safeCall(function()
+        local io = ImGui.GetIO and ImGui.GetIO() or nil
+        if not io or not io.Fonts or not io.Fonts.AddFontFromFileTTF then
+            return
+        end
+
+        local candidates = {
+            'C:/Windows/Fonts/ariblk.ttf',
+            'C:/Windows/Fonts/impact.ttf',
+            'C:/Windows/Fonts/arialbd.ttf',
+        }
+
+        for _, fontPath in ipairs(candidates) do
+            local f = io.Fonts:AddFontFromFileTTF(fontPath, 22)
+            if f then
+                headerFont = f
+                break
+            end
+        end
+    end, nil)
+end
+
+pushDiabloWindowStyle = function()
+    if not state.diabloTheme then return 0, 0 end
+    local pushedColors = 0
+    local pushedVars = 0
+
+    ImGui.PushStyleColor(ImGuiCol.WindowBg, 0.07, 0.05, 0.04, 0.96); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.Border, 0.58, 0.43, 0.18, 0.85); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.TitleBg, 0.12, 0.06, 0.03, 0.95); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.TitleBgActive, 0.18, 0.09, 0.04, 0.98); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.FrameBg, 0.13, 0.10, 0.07, 0.90); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, 0.24, 0.18, 0.10, 0.90); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.FrameBgActive, 0.32, 0.24, 0.12, 0.92); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.Button, 0.22, 0.13, 0.06, 0.88); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.36, 0.22, 0.09, 0.94); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.46, 0.28, 0.10, 0.98); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.Header, 0.24, 0.14, 0.06, 0.92); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.HeaderHovered, 0.36, 0.22, 0.08, 0.96); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.HeaderActive, 0.48, 0.28, 0.10, 0.98); pushedColors = pushedColors + 1
+
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 10); pushedVars = pushedVars + 1
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1.5); pushedVars = pushedVars + 1
+    ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 5); pushedVars = pushedVars + 1
+    ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1.0); pushedVars = pushedVars + 1
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, 10, 10); pushedVars = pushedVars + 1
+
+    return pushedColors, pushedVars
+end
+
+popDiabloWindowStyle = function(pushedColors, pushedVars)
+    if pushedVars and pushedVars > 0 then ImGui.PopStyleVar(pushedVars) end
+    if pushedColors and pushedColors > 0 then ImGui.PopStyleColor(pushedColors) end
+end
+
+drawDiabloHeader = function(title, targetKey, closeMessage, subtitle)
+    tryLoadHeaderFont()
+    local avail = ImGui.GetContentRegionAvail()
+    local width = type(avail) == 'number' and avail or (avail.x or 0)
+    local headerHeight = 48
+    local xsize = 28
+
+    ImGui.PushStyleColor(ImGuiCol.ChildBg, 0.14, 0.07, 0.03, 0.92)
+    ImGui.PushStyleColor(ImGuiCol.Border, 0.68, 0.52, 0.18, 0.95)
+    ImGui.BeginChild('##header_' .. tostring(targetKey), 0, headerHeight, true, bit32.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse))
+
+    local startX, startY = ImGui.GetCursorPos()
+    local closeX = math.max(startX, width - xsize - 8)
+    local pulse = 0.5 + (math.sin(os.clock() * 2.8) * 0.5)
+    local glow = 0.30 + (pulse * 0.22)
+
+    local fullTitle = title or 'BEbags'
+    if subtitle and subtitle ~= '' then
+        fullTitle = fullTitle .. ' — ' .. subtitle
+    end
+
+    local leftPad = startX + 10
+    local rightPad = closeX - 12
+
+    if headerFont then ImGui.PushFont(headerFont) end
+    local fullWidth = ImGui.CalcTextSize(fullTitle)
+    local mainWidth = ImGui.CalcTextSize(title or 'BEbags')
+    local textX = leftPad + math.max(0, (rightPad - leftPad - fullWidth) * 0.5)
+    local textY = startY + math.max(0, math.floor((headerHeight - 24) * 0.5) - 1)
+
+    ImGui.SetCursorPos(textX, textY)
+    ImGui.TextColored(0.84, 0.76, 0.58, 0.98, fullTitle)
+
+    if title and title ~= '' then
+        ImGui.SetCursorPos(textX - 1, textY)
+        ImGui.TextColored(0.65 + glow * 0.2, 0.42 + glow * 0.2, 0.10 + glow * 0.12, 0.22 + glow * 0.24, title)
+        ImGui.SetCursorPos(textX + 1, textY)
+        ImGui.TextColored(0.65 + glow * 0.2, 0.42 + glow * 0.2, 0.10 + glow * 0.12, 0.22 + glow * 0.24, title)
+        ImGui.SetCursorPos(textX, textY - 1)
+        ImGui.TextColored(0.65 + glow * 0.2, 0.42 + glow * 0.2, 0.10 + glow * 0.12, 0.18 + glow * 0.20, title)
+        ImGui.SetCursorPos(textX, textY + 1)
+        ImGui.TextColored(0.65 + glow * 0.2, 0.42 + glow * 0.2, 0.10 + glow * 0.12, 0.18 + glow * 0.20, title)
+        ImGui.SetCursorPos(textX, textY)
+        ImGui.TextColored(0.96, 0.82 + pulse * 0.06, 0.34 + pulse * 0.04, 1.0, title)
+    end
+    if headerFont then ImGui.PopFont() end
+
+    local screenPos = safeCall(function() return ImGui.GetCursorScreenPos() end, nil)
+    local hoverRect = false
+    if screenPos then
+        local sx = type(screenPos) == 'table' and (screenPos.x or screenPos[1] or 0) or 0
+        local sy = type(screenPos) == 'table' and (screenPos.y or screenPos[2] or 0) or 0
+        hoverRect = safeCall(function() return ImGui.IsMouseHoveringRect(sx + closeX - startX, sy + 2, sx + closeX - startX + xsize, sy + 24) end, false) or false
+    end
+    local hoverPulse = 0.5 + (math.sin(os.clock() * 10.0) * 0.5)
+    local baseR = hoverRect and (0.52 + hoverPulse * 0.16) or 0.35
+    local baseG = hoverRect and (0.17 + hoverPulse * 0.05) or 0.09
+    local baseB = hoverRect and (0.09 + hoverPulse * 0.04) or 0.06
+
+    ImGui.SetCursorPos(closeX, startY + 9)
+    ImGui.PushStyleColor(ImGuiCol.Button, baseR, baseG, baseB, 0.96)
+    ImGui.PushStyleColor(ImGuiCol.ButtonHovered, math.min(1.0, baseR + 0.10), math.min(1.0, baseG + 0.06), math.min(1.0, baseB + 0.04), 1.0)
+    ImGui.PushStyleColor(ImGuiCol.ButtonActive, math.min(1.0, baseR + 0.16), math.min(1.0, baseG + 0.09), math.min(1.0, baseB + 0.06), 1.0)
+    if ImGui.SmallButton('X##' .. tostring(targetKey)) then
+        state[targetKey] = false
+        saveSettings()
+        if closeMessage then echo(closeMessage) end
+        ImGui.PopStyleColor(3)
+        ImGui.EndChild()
+        ImGui.PopStyleColor(2)
+        return true
+    end
+    ImGui.PopStyleColor(3)
+
+    ImGui.EndChild()
+    ImGui.PopStyleColor(2)
+    ImGui.Spacing()
+    return false
+end
+
+local function drawWindowCloseX(targetKey, closeMessage)
+    local avail = ImGui.GetContentRegionAvail()
+    local xsize = 22
+    if avail > xsize then
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + avail - xsize)
+    end
+    if ImGui.SmallButton('X##' .. tostring(targetKey)) then
+        state[targetKey] = false
+        saveSettings()
+        if closeMessage then
+            echo(closeMessage)
+        end
+        return true
+    end
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('Close this window')
+    end
+    return false
+end
+
+local function drawMainWindow(entries, bankMode)
+    setMainWindowSize(#entries)
+
+    local flags = bit32.bor(ImGuiWindowFlags.NoTitleBar, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)
+
+    local pushedColors, pushedVars = pushDiabloWindowStyle()
+    local shouldDraw = ImGui.Begin('BEbags', true, flags)
+    if shouldDraw then
+        local subtitle = state.activeView == 'bank' and 'Vault of the Hoard' or 'Adventurer\'s Pack'
+        if drawDiabloHeader('BEbags', 'showMainWindow', 'Main window hidden.', subtitle) then
+            ImGui.End()
+            popDiabloWindowStyle(pushedColors, pushedVars)
+            return
+        end
+
+        local contentChildFlags = 0
+        if state.mainNoScrollbar then
+            contentChildFlags = bit32.bor(contentChildFlags, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)
+        else
+            contentChildFlags = bit32.bor(contentChildFlags, ImGuiWindowFlags.AlwaysVerticalScrollbar)
+        end
+        ImGui.BeginChild('##main_content', 0, 0, false, contentChildFlags)
+
+        local totalInventoryValue = computeInventoryValue(entries)
+        local usedSlots, totalSlots = getSlotUsage(bankMode)
+        if state.showMainValueBar then
+            local label = (state.activeView == 'bank') and 'Bank Total: ' or 'Total: '
+            ImGui.TextColored(0.95, 0.88, 0.30, 1.0, label .. formatMoney(totalInventoryValue))
+            ImGui.SameLine()
+        end
+        ImGui.TextColored(0.78, 0.86, 0.96, 1.0, string.format('Slots: %d/%d', usedSlots, totalSlots))
+        ImGui.SameLine()
+
+        drawViewButtons(bankMode)
+        ImGui.Separator()
+        drawTopSortButtons()
+        ImGui.Separator()
+
+        local cursorPresent = hasCursorItem()
+        for i, entry in ipairs(entries) do
+            drawEntry(entry, i, cursorPresent, bankMode)
+            if (i % state.columns) ~= 0 then
+                ImGui.SameLine()
+            end
+        end
+
+        ImGui.EndChild()
+    end
+    ImGui.End()
+    popDiabloWindowStyle(pushedColors, pushedVars)
+end
+
+local function processPendingLeftClick()
+    if not state.pendingLeftClick then
+        return
+    end
+
+    if os.clock() < ((state.pendingLeftClick.startedAt or 0) + (state.leftClickDelay or 0.24)) then
+        return
+    end
+
+    if state.pendingLeftClick.view == 'bank' then
+        bankItemnotifyLeft(state.pendingLeftClick.bankNum, state.pendingLeftClick.subslot)
+    else
+        itemnotifyLeft(state.pendingLeftClick.packNum, state.pendingLeftClick.subslot)
+    end
+    state.pendingLeftClick = nil
+end
+
+local function processPendingSell()
+    if not state.pendingSell then
+        return
+    end
+
+    if os.clock() < (state.pendingSell.readyAt or 0) then
+        return
+    end
+
+    if not merchantWindowOpen() then
+        echo('Merchant window closed before sell completed.')
+        state.pendingSell = nil
+        return
+    end
+
+    local qty = tonumber(state.pendingSell.stackSize) or 1
+    if qty < 1 then qty = 1 end
+    sellSelectedMerchantItem(qty)
+    echo(string.format('Sent merchant sell for %s x%d.', (state.pendingSell.itemName or 'item'), qty))
+    state.pendingSell = nil
+end
+
+local function drawHelpDialog()
+    if not state.showHelpDialog then
+        return
+    end
+
+    ImGui.SetNextWindowPos(140, 140, ImGuiCond.Appearing)
+    ImGui.SetNextWindowSize(760, 520, ImGuiCond.FirstUseEver)
+    local pushedColors, pushedVars = pushDiabloWindowStyle()
+    local shouldDraw = ImGui.Begin('BEbags Help', true, bit32.bor(ImGuiWindowFlags.NoTitleBar, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse))
+    if shouldDraw then
+        if drawDiabloHeader('BEbags Help', 'showHelpDialog', 'Help dialog closed.', 'Field manual') then
+            ImGui.End()
+            popDiabloWindowStyle(pushedColors, pushedVars)
+            return
+        end
+        ImGui.BeginChild('##help_content', 0, 0, false)
+        ImGui.TextWrapped('BEbags combines the contents of all of your carried bags into one easy-to-read window, and also supports a synced bank browser.')
+        ImGui.Spacing()
+        ImGui.TextWrapped('What you can do:')
+        ImGui.BulletText('See all bag items in one place instead of opening each bag one by one.')
+        ImGui.BulletText('Click Inventory to view your carried bags.')
+        ImGui.BulletText('Click Bank to view your bank. If your bank is open, you will see it live. If not, you will see your last synced snapshot.')
+        ImGui.BulletText('Opening your bank now auto-syncs a fresh snapshot. Manual bank sync and bank status text can be re-enabled from Config if you want them back.')
+        ImGui.BulletText('Single left click an item to pick it up, place it, or swap it.')
+        ImGui.BulletText('Double left click: inspect item.')
+        ImGui.BulletText('Right click an inventory item to use it if it is a clicky.')
+        ImGui.BulletText('Ctrl + right click an inventory item while a merchant window is open to sell the full stack.')
+        ImGui.BulletText('Use the sort buttons at the top to quickly sort by bag order, value, or name.')
+        ImGui.BulletText('Use the floating bag icon to show or hide the main window.')
+        ImGui.BulletText('Right click the floating bag icon to open config.')
+        ImGui.BulletText('Middle click the floating bag icon to open quick actions.')
+
+        ImGui.Spacing()
+        ImGui.TextWrapped('Helpful notes:')
+        ImGui.BulletText('Packed mode hides empty slots. Full mode can show them. Deposit mode is a quick temporary way to reveal empty slots without changing your normal mode.')
+        ImGui.BulletText('Cached bank view is browse-only when you are away from a banker.')
+        ImGui.BulletText('Most settings save automatically, so your layout stays the way you left it.')
+
+        ImGui.Spacing()
+        if ImGui.SmallButton('Close Help') then
+            state.showHelpDialog = false
+            saveSettings()
+            echo('Help dialog closed.')
+        end
+        ImGui.EndChild()
+    end
+    ImGui.End()
+    popDiabloWindowStyle(pushedColors, pushedVars)
+end
+
+local function drawUI()
+    local ok, err = pcall(function()
+        processPendingSell()
+        processPendingLeftClick()
+        pulseDepositMode()
+        local entries, bankMode = buildEntries()
+        sortEntries(entries)
+        drawLauncher()
+        if state.showMainWindow then
+            drawMainWindow(entries, bankMode)
+        end
+        drawConfigWindow(entries, bankMode)
+        drawHelpDialog()
+    end)
+    if not ok then
+        state.lastError = tostring(err)
+        echo('UI error: ' .. state.lastError)
+    end
+end
+
+mq.bind('/BEbags', function(line)
+    local arg = (line or ''):lower():match('^%s*(.-)%s*$')
+    if arg == '' or arg == 'config' then
+        state.showConfigWindow = not state.showConfigWindow
+        ImGui.SetNextWindowPos(120, 120, ImGuiCond.Appearing)
+        saveSettings()
+        echo(state.showConfigWindow and 'Config window opened.' or 'Config window hidden.')
+    elseif arg == 'packed' then
+        doAction('Mode set to packed.', function() state.mode = 'packed' end)
+    elseif arg == 'full' then
+        doAction('Mode set to full.', function() state.mode = 'full' end)
+    elseif arg == 'showempty' then
+        doAction('Full mode will show empty slots.', function() state.hideEmptyInFull = false end)
+    elseif arg == 'hideempty' then
+        doAction('Full mode will hide empty slots.', function() state.hideEmptyInFull = true end)
+    elseif arg == 'bank' then
+        doAction('Switched to bank view.', function() state.activeView = 'bank' end)
+    elseif arg == 'inventory' or arg == 'inv' then
+        doAction('Switched to inventory view.', function() state.activeView = 'inventory' end)
+    elseif arg == 'syncbank' then
+        syncBankCache()
+    elseif arg == 'deposit' then
+        performAutoDeposit()
+    elseif arg == 'depositmode' then
+        setDepositMode(not state.depositMode)
+    elseif arg == 'save' then
+        saveSettings()
+        echo('Settings saved.')
+    elseif arg == 'reset' then
+        resetSettings()
+        echo('Settings reset.')
+    elseif arg == 'autoresize on' then
+        doAction('Auto resize enabled.', function() state.autoResizeMain = true end)
+    elseif arg == 'autoresize off' then
+        doAction('Auto resize disabled.', function() state.autoResizeMain = false end)
+    elseif arg == 'value on' then
+        doAction('Main value bar enabled.', function() state.showMainValueBar = true end)
+    elseif arg == 'value off' then
+        doAction('Main value bar disabled.', function() state.showMainValueBar = false end)
+    elseif arg == 'right on' then
+        doAction('Right click enabled.', function() state.rightClickEnabled = true end)
+    elseif arg == 'right off' then
+        doAction('Right click disabled.', function() state.rightClickEnabled = false end)
+    elseif arg == 'show' then
+        doAction('Main window shown.', function() state.showMainWindow = true end)
+    elseif arg == 'hide' then
+        doAction('Main window hidden.', function() state.showMainWindow = false end)
+    elseif arg == 'toggle' then
+        doAction(state.showMainWindow and 'Main window hidden.' or 'Main window shown.', function() state.showMainWindow = not state.showMainWindow end)
+    elseif arg == 'launcher show' then
+        doAction('Launcher shown.', function() state.showLauncher = true end)
+    elseif arg == 'launcher hide' then
+        doAction('Launcher hidden.', function() state.showLauncher = false end)
+    elseif arg == 'help' then
+        state.showHelpDialog = not state.showHelpDialog
+        saveSettings()
+        echo(state.showHelpDialog and 'Help dialog opened.' or 'Help dialog closed.')
+    else
+        echo('Usage: /BEbags config | packed | full | showempty | hideempty | inventory | bank | deposit | depositmode | syncbank | save | reset | autoresize on|off | value on|off | right on|off | show | hide | toggle | launcher show|hide | help')
+    end
+end)
+
+if loadSettings() then
+    echo('Loaded saved settings from ' .. configPath)
+else
+    echo('No saved settings found; using defaults.')
+end
+
+if loadBankCache() then
+    echo('Loaded bank snapshot from ' .. bankCachePath)
+else
+    echo('No bank snapshot found yet. Open your bank once to auto-sync it.')
+end
+
+echo('Started. Use /BEbags config for the config UI.')
+mq.imgui.init(SCRIPT_NAME, drawUI)
+
+while state.running do
+    pulseBankAutoSync()
+    mq.delay(50)
+end
