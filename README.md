@@ -2,7 +2,7 @@
 
 # 👜 BEbags
 
-**BEbags** is a powerful inventory manager for **AscendantEQ (MacroQuest / E3N)** that combines all your bags into one clean, easy-to-use interface.
+**BEbags** is a powerful inventory manager for **EQEmu Servers using MacroQuest / E3N** that combines all your bags into one clean, easy-to-use interface.
 
 No more opening bags one by one. Everything is in one place.
 
@@ -29,6 +29,9 @@ No more opening bags one by one. Everything is in one place.
 
 ### Help / Field Manual
 ![Help](./screenshots/field_manual.png)
+
+### Inventory / Adventurer's Pack
+![Inventory](./screenshots/inventory.png)
 
 ---
 
