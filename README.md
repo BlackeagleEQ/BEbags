@@ -1,4 +1,11 @@
 ![BEbags Banner](./screenshots/banner.png)
+<p align="center">
+  <strong>Download</strong>
+</p>
+
+<p align="center">
+  👉 <a href="https://github.com/BlackeagleEQ/BEbags/releases/latest">Download Latest Version</a> 👈
+</p>
 
 # 👜 BEbags
 
