@@ -1,12 +1,14 @@
 # Changelog
 
-## v1.0.0
+## v1.1.0
+- Added 4 selectable theme presets (Classic, Diablo, Emerald, Frost)
+- Added Destroy and Drop cursor actions
+- Improved quick actions menu (removed redundant buttons)
+- UI polish and stability improvements
 
-- Rebranded the script as BEbags
-- Added unified inventory and synced bank browsing
-- Added auto bank sync and cached bank snapshot support
-- Added auto-deposit behavior with stack-first placement
-- Added double-click item inspect
-- Added launcher quick actions
-- Added Diablo-style themed windows
-- Added slot usage display and persistent settings
+## v1.0.0
+- Initial release
+- Inventory bag unification
+- Bank sync and viewing
+- Deposit functionality
+- Double-click inspect

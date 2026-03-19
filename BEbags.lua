@@ -59,6 +59,7 @@ local state = {
     leftClickDelay = 0.24,
     pendingLeftClick = nil,
     diabloTheme = true,
+    themePreset = 'Diablo',
 }
 
 local headerFont = nil
@@ -108,7 +109,7 @@ local function saveSettings()
         'showConfigWindow', 'autoResizeMain', 'mainNoScrollbar',
         'mainNoTitleBar', 'showMainValueBar', 'showMainWindow', 'showLauncher',
         'showHelpDialog', 'widthFudge', 'heightFudge', 'activeView',
-        'showBankSyncButton', 'showBankStatusText', 'depositMode', 'leftClickDelay', 'diabloTheme',
+        'showBankSyncButton', 'showBankStatusText', 'depositMode', 'leftClickDelay', 'diabloTheme', 'themePreset',
     }
 
     local f, err = io.open(configPath, 'w')
@@ -140,6 +141,19 @@ local function loadSettings()
     if state.activeView ~= 'inventory' and state.activeView ~= 'bank' then
         state.activeView = 'inventory'
     end
+    if type(state.themePreset) ~= 'string' or state.themePreset == '' then
+        state.themePreset = state.diabloTheme and 'Diablo' or 'Classic'
+    end
+    local validThemes = {
+        Classic = true,
+        Diablo = true,
+        Emerald = true,
+        Frost = true,
+    }
+    if not validThemes[state.themePreset] then
+        state.themePreset = 'Diablo'
+    end
+    state.diabloTheme = state.themePreset ~= 'Classic'
     return true
 end
 
@@ -195,6 +209,7 @@ local function resetSettings()
     state.leftClickDelay = 0.24
     state.pendingLeftClick = nil
     state.diabloTheme = true
+    state.themePreset = 'Diablo'
     saveSettings()
     echo('Settings reset to defaults.')
 end
@@ -1097,6 +1112,33 @@ local function performAutoDeposit()
     return true
 end
 
+
+local function destroyCursorItem()
+    local cursorItem = getCursorItem()
+    local cursorName = getCursorName()
+    if not cursorItem or not cursorName then
+        echo('There is no item on your cursor to destroy.')
+        return false
+    end
+
+    mq.cmd('/destroy')
+    state.statusMessage = string.format('Destroyed %s.', cursorName)
+    return true
+end
+
+local function dropCursorItem()
+    local cursorItem = getCursorItem()
+    local cursorName = getCursorName()
+    if not cursorItem or not cursorName then
+        echo('There is no item on your cursor to drop.')
+        return false
+    end
+
+    mq.cmd('/drop')
+    state.statusMessage = string.format('Dropped %s on the ground.', cursorName)
+    return true
+end
+
 local function drawTopSortButtons()
     local function sortBtn(label, mode, msg)
         local isActive = (state.sortMode == mode)
@@ -1260,9 +1302,20 @@ local function drawConfigWindow(entries, bankMode)
         if ImGui.SmallButton(state.rightClickEnabled and 'Right Click: ON' or 'Right Click: OFF') then
             doAction('Toggled right click.', function() state.rightClickEnabled = not state.rightClickEnabled end)
         end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.diabloTheme and 'Theme: Diablo' or 'Theme: Classic') then
-            doAction('Toggled theme.', function() state.diabloTheme = not state.diabloTheme end)
+
+        ImGui.Text('Theme Presets')
+        local themeOrder = {'Classic', 'Diablo', 'Emerald', 'Frost'}
+        for i, themeName in ipairs(themeOrder) do
+            if i > 1 then
+                ImGui.SameLine()
+            end
+            local label = (state.themePreset == themeName) and ('[' .. themeName .. ']') or themeName
+            if ImGui.SmallButton(label) then
+                doAction('Theme set to ' .. themeName .. '.', function()
+                    state.themePreset = themeName
+                    state.diabloTheme = themeName ~= 'Classic'
+                end)
+            end
         end
 
         ImGui.Text('Views')
@@ -1451,52 +1504,6 @@ local function drawLauncher()
                 ImGui.SetTooltip('Toggle right-click item use')
             end
 
-            if ImGui.SmallButton('Inventory') then
-                state.activeView = 'inventory'
-                saveSettings()
-                echo('Switched to inventory view.')
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Show your carried bag view')
-            end
-
-            ImGui.SameLine()
-            if ImGui.SmallButton('Bank') then
-                state.activeView = 'bank'
-                saveSettings()
-                echo('Switched to bank view.')
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Show your live bank if open, otherwise your last synced bank snapshot')
-            end
-
-            ImGui.SameLine()
-            if ImGui.SmallButton('Deposit') then
-                performAutoDeposit()
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Places the item on your cursor into the first empty bag slot in the current view. Bank deposits require the bank window to be open.')
-            end
-
-            if state.showBankSyncButton then
-                if ImGui.SmallButton('Sync Bank') then
-                    syncBankCache()
-                end
-                if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('Refresh your bank snapshot while a bank window is open')
-                end
-                ImGui.SameLine()
-            end
-            if ImGui.SmallButton('Open Config') then
-                state.showConfigWindow = true
-                ImGui.SetNextWindowPos(120, 120, ImGuiCond.Appearing)
-                saveSettings()
-                echo('Config window opened.')
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Open the full config window')
-            end
-
             if ImGui.SmallButton('Help') then
                 state.showHelpDialog = true
                 saveSettings()
@@ -1557,6 +1564,16 @@ local function drawViewButtons(bankMode)
         performAutoDeposit()
     end, 'Place the item on your cursor into the first empty bag slot in bag order for the current view. Bank deposits require the bank window to be open.')
 
+    ImGui.SameLine()
+    drawViewButton('Destroy', false, function()
+        destroyCursorItem()
+    end, 'Destroy the item currently on your cursor. This cannot be undone.')
+
+    ImGui.SameLine()
+    drawViewButton('Drop', false, function()
+        dropCursorItem()
+    end, 'Drop the item currently on your cursor onto the ground.')
+
     if state.showBankSyncButton then
         ImGui.SameLine()
         if ImGui.SmallButton('Sync Bank') then
@@ -1575,6 +1592,126 @@ local function drawViewButtons(bankMode)
             ImGui.TextColored(0.82, 0.90, 1.00, 1.0, 'View: Inventory')
         end
     end
+end
+
+
+local THEME_PRESETS = {
+    Classic = {
+        windowBg = {0.06, 0.06, 0.06, 0.94},
+        border = {0.45, 0.45, 0.45, 0.85},
+        titleBg = {0.10, 0.10, 0.10, 0.95},
+        titleBgActive = {0.14, 0.14, 0.14, 0.98},
+        frameBg = {0.16, 0.16, 0.16, 0.90},
+        frameBgHovered = {0.24, 0.24, 0.24, 0.92},
+        frameBgActive = {0.30, 0.30, 0.30, 0.95},
+        button = {0.20, 0.20, 0.20, 0.90},
+        buttonHovered = {0.30, 0.30, 0.30, 0.95},
+        buttonActive = {0.38, 0.38, 0.38, 0.98},
+        header = {0.22, 0.22, 0.22, 0.92},
+        headerHovered = {0.30, 0.30, 0.30, 0.96},
+        headerActive = {0.38, 0.38, 0.38, 0.98},
+        childBg = {0.10, 0.10, 0.10, 0.95},
+        headerBorder = {0.60, 0.60, 0.60, 0.92},
+        titleText = {0.92, 0.92, 0.92, 0.98},
+        glowText = {0.82, 0.82, 0.82, 0.26},
+        accentText = {1.00, 1.00, 1.00, 1.00},
+        closeButton = {0.34, 0.18, 0.18, 0.96},
+        closeHover = {0.52, 0.24, 0.24, 1.00},
+        closeActive = {0.64, 0.30, 0.30, 1.00},
+        windowRounding = 8,
+        windowBorderSize = 1.2,
+        frameRounding = 4,
+        frameBorderSize = 1.0,
+        headerHeight = 42,
+    },
+    Diablo = {
+        windowBg = {0.07, 0.05, 0.04, 0.96},
+        border = {0.58, 0.43, 0.18, 0.85},
+        titleBg = {0.12, 0.06, 0.03, 0.95},
+        titleBgActive = {0.18, 0.09, 0.04, 0.98},
+        frameBg = {0.13, 0.10, 0.07, 0.90},
+        frameBgHovered = {0.24, 0.18, 0.10, 0.90},
+        frameBgActive = {0.32, 0.24, 0.12, 0.92},
+        button = {0.22, 0.13, 0.06, 0.88},
+        buttonHovered = {0.36, 0.22, 0.09, 0.94},
+        buttonActive = {0.46, 0.28, 0.10, 0.98},
+        header = {0.24, 0.14, 0.06, 0.92},
+        headerHovered = {0.36, 0.22, 0.08, 0.96},
+        headerActive = {0.48, 0.28, 0.10, 0.98},
+        childBg = {0.14, 0.07, 0.03, 0.92},
+        headerBorder = {0.68, 0.52, 0.18, 0.95},
+        titleText = {0.84, 0.76, 0.58, 0.98},
+        glowText = {0.70, 0.50, 0.18, 0.28},
+        accentText = {0.96, 0.84, 0.36, 1.00},
+        closeButton = {0.35, 0.09, 0.06, 0.96},
+        closeHover = {0.58, 0.20, 0.10, 1.00},
+        closeActive = {0.72, 0.28, 0.14, 1.00},
+        windowRounding = 10,
+        windowBorderSize = 1.5,
+        frameRounding = 5,
+        frameBorderSize = 1.0,
+        headerHeight = 48,
+    },
+    Emerald = {
+        windowBg = {0.03, 0.08, 0.06, 0.96},
+        border = {0.18, 0.62, 0.42, 0.88},
+        titleBg = {0.04, 0.11, 0.08, 0.96},
+        titleBgActive = {0.06, 0.16, 0.11, 0.98},
+        frameBg = {0.08, 0.16, 0.12, 0.92},
+        frameBgHovered = {0.12, 0.25, 0.18, 0.94},
+        frameBgActive = {0.18, 0.34, 0.24, 0.96},
+        button = {0.08, 0.24, 0.18, 0.90},
+        buttonHovered = {0.12, 0.38, 0.28, 0.95},
+        buttonActive = {0.16, 0.48, 0.36, 0.98},
+        header = {0.08, 0.22, 0.16, 0.92},
+        headerHovered = {0.12, 0.34, 0.24, 0.96},
+        headerActive = {0.16, 0.46, 0.32, 0.98},
+        childBg = {0.04, 0.12, 0.09, 0.94},
+        headerBorder = {0.34, 0.84, 0.62, 0.96},
+        titleText = {0.74, 0.96, 0.86, 0.98},
+        glowText = {0.20, 0.70, 0.52, 0.28},
+        accentText = {0.86, 1.00, 0.94, 1.00},
+        closeButton = {0.18, 0.28, 0.18, 0.96},
+        closeHover = {0.28, 0.44, 0.28, 1.00},
+        closeActive = {0.36, 0.56, 0.36, 1.00},
+        windowRounding = 10,
+        windowBorderSize = 1.5,
+        frameRounding = 5,
+        frameBorderSize = 1.0,
+        headerHeight = 48,
+    },
+    Frost = {
+        windowBg = {0.04, 0.06, 0.10, 0.96},
+        border = {0.46, 0.66, 0.92, 0.88},
+        titleBg = {0.05, 0.09, 0.15, 0.96},
+        titleBgActive = {0.08, 0.12, 0.20, 0.98},
+        frameBg = {0.10, 0.14, 0.22, 0.92},
+        frameBgHovered = {0.16, 0.22, 0.34, 0.94},
+        frameBgActive = {0.20, 0.30, 0.46, 0.96},
+        button = {0.10, 0.18, 0.30, 0.90},
+        buttonHovered = {0.16, 0.28, 0.46, 0.95},
+        buttonActive = {0.22, 0.38, 0.58, 0.98},
+        header = {0.12, 0.20, 0.32, 0.92},
+        headerHovered = {0.18, 0.30, 0.48, 0.96},
+        headerActive = {0.24, 0.40, 0.62, 0.98},
+        childBg = {0.06, 0.10, 0.18, 0.94},
+        headerBorder = {0.64, 0.82, 1.00, 0.96},
+        titleText = {0.84, 0.92, 1.00, 0.98},
+        glowText = {0.36, 0.58, 0.88, 0.28},
+        accentText = {0.96, 0.98, 1.00, 1.00},
+        closeButton = {0.20, 0.24, 0.34, 0.96},
+        closeHover = {0.30, 0.38, 0.52, 1.00},
+        closeActive = {0.38, 0.48, 0.66, 1.00},
+        windowRounding = 10,
+        windowBorderSize = 1.5,
+        frameRounding = 5,
+        frameBorderSize = 1.0,
+        headerHeight = 48,
+    },
+}
+
+local function getActiveTheme()
+    return THEME_PRESETS[state.themePreset] or THEME_PRESETS.Diablo
 end
 
 
@@ -1606,28 +1743,28 @@ local function tryLoadHeaderFont()
 end
 
 pushDiabloWindowStyle = function()
-    if not state.diabloTheme then return 0, 0 end
+    local theme = getActiveTheme()
     local pushedColors = 0
     local pushedVars = 0
 
-    ImGui.PushStyleColor(ImGuiCol.WindowBg, 0.07, 0.05, 0.04, 0.96); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.Border, 0.58, 0.43, 0.18, 0.85); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.TitleBg, 0.12, 0.06, 0.03, 0.95); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.TitleBgActive, 0.18, 0.09, 0.04, 0.98); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.FrameBg, 0.13, 0.10, 0.07, 0.90); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, 0.24, 0.18, 0.10, 0.90); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.FrameBgActive, 0.32, 0.24, 0.12, 0.92); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.Button, 0.22, 0.13, 0.06, 0.88); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.36, 0.22, 0.09, 0.94); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.46, 0.28, 0.10, 0.98); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.Header, 0.24, 0.14, 0.06, 0.92); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.HeaderHovered, 0.36, 0.22, 0.08, 0.96); pushedColors = pushedColors + 1
-    ImGui.PushStyleColor(ImGuiCol.HeaderActive, 0.48, 0.28, 0.10, 0.98); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.WindowBg, unpack(theme.windowBg)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.Border, unpack(theme.border)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.TitleBg, unpack(theme.titleBg)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.TitleBgActive, unpack(theme.titleBgActive)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.FrameBg, unpack(theme.frameBg)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, unpack(theme.frameBgHovered)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.FrameBgActive, unpack(theme.frameBgActive)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.Button, unpack(theme.button)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.ButtonHovered, unpack(theme.buttonHovered)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.ButtonActive, unpack(theme.buttonActive)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.Header, unpack(theme.header)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.HeaderHovered, unpack(theme.headerHovered)); pushedColors = pushedColors + 1
+    ImGui.PushStyleColor(ImGuiCol.HeaderActive, unpack(theme.headerActive)); pushedColors = pushedColors + 1
 
-    ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 10); pushedVars = pushedVars + 1
-    ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1.5); pushedVars = pushedVars + 1
-    ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 5); pushedVars = pushedVars + 1
-    ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1.0); pushedVars = pushedVars + 1
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, theme.windowRounding or 10); pushedVars = pushedVars + 1
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, theme.windowBorderSize or 1.5); pushedVars = pushedVars + 1
+    ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, theme.frameRounding or 5); pushedVars = pushedVars + 1
+    ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, theme.frameBorderSize or 1.0); pushedVars = pushedVars + 1
     ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, 10, 10); pushedVars = pushedVars + 1
 
     return pushedColors, pushedVars
@@ -1640,19 +1777,19 @@ end
 
 drawDiabloHeader = function(title, targetKey, closeMessage, subtitle)
     tryLoadHeaderFont()
+    local theme = getActiveTheme()
     local avail = ImGui.GetContentRegionAvail()
     local width = type(avail) == 'number' and avail or (avail.x or 0)
-    local headerHeight = 48
+    local headerHeight = theme.headerHeight or 48
     local xsize = 28
 
-    ImGui.PushStyleColor(ImGuiCol.ChildBg, 0.14, 0.07, 0.03, 0.92)
-    ImGui.PushStyleColor(ImGuiCol.Border, 0.68, 0.52, 0.18, 0.95)
+    ImGui.PushStyleColor(ImGuiCol.ChildBg, unpack(theme.childBg))
+    ImGui.PushStyleColor(ImGuiCol.Border, unpack(theme.headerBorder))
     ImGui.BeginChild('##header_' .. tostring(targetKey), 0, headerHeight, true, bit32.bor(ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse))
 
     local startX, startY = ImGui.GetCursorPos()
     local closeX = math.max(startX, width - xsize - 8)
     local pulse = 0.5 + (math.sin(os.clock() * 2.8) * 0.5)
-    local glow = 0.30 + (pulse * 0.22)
 
     local fullTitle = title or 'BEbags'
     if subtitle and subtitle ~= '' then
@@ -1664,43 +1801,38 @@ drawDiabloHeader = function(title, targetKey, closeMessage, subtitle)
 
     if headerFont then ImGui.PushFont(headerFont) end
     local fullWidth = ImGui.CalcTextSize(fullTitle)
-    local mainWidth = ImGui.CalcTextSize(title or 'BEbags')
     local textX = leftPad + math.max(0, (rightPad - leftPad - fullWidth) * 0.5)
     local textY = startY + math.max(0, math.floor((headerHeight - 24) * 0.5) - 1)
 
     ImGui.SetCursorPos(textX, textY)
-    ImGui.TextColored(0.84, 0.76, 0.58, 0.98, fullTitle)
+    ImGui.TextColored(theme.titleText[1], theme.titleText[2], theme.titleText[3], theme.titleText[4], fullTitle)
 
     if title and title ~= '' then
+        local glowA = (theme.glowText[4] or 0.24) + pulse * 0.08
+        local gr, gg, gb = theme.glowText[1], theme.glowText[2], theme.glowText[3]
         ImGui.SetCursorPos(textX - 1, textY)
-        ImGui.TextColored(0.65 + glow * 0.2, 0.42 + glow * 0.2, 0.10 + glow * 0.12, 0.22 + glow * 0.24, title)
+        ImGui.TextColored(gr, gg, gb, glowA, title)
         ImGui.SetCursorPos(textX + 1, textY)
-        ImGui.TextColored(0.65 + glow * 0.2, 0.42 + glow * 0.2, 0.10 + glow * 0.12, 0.22 + glow * 0.24, title)
+        ImGui.TextColored(gr, gg, gb, glowA, title)
         ImGui.SetCursorPos(textX, textY - 1)
-        ImGui.TextColored(0.65 + glow * 0.2, 0.42 + glow * 0.2, 0.10 + glow * 0.12, 0.18 + glow * 0.20, title)
+        ImGui.TextColored(gr, gg, gb, glowA * 0.85, title)
         ImGui.SetCursorPos(textX, textY + 1)
-        ImGui.TextColored(0.65 + glow * 0.2, 0.42 + glow * 0.2, 0.10 + glow * 0.12, 0.18 + glow * 0.20, title)
+        ImGui.TextColored(gr, gg, gb, glowA * 0.85, title)
         ImGui.SetCursorPos(textX, textY)
-        ImGui.TextColored(0.96, 0.82 + pulse * 0.06, 0.34 + pulse * 0.04, 1.0, title)
+        local ar, ag, ab, aa = unpack(theme.accentText)
+        ImGui.TextColored(ar, ag, ab, aa or 1.0, title)
     end
     if headerFont then ImGui.PopFont() end
 
-    local screenPos = safeCall(function() return ImGui.GetCursorScreenPos() end, nil)
-    local hoverRect = false
-    if screenPos then
-        local sx = type(screenPos) == 'table' and (screenPos.x or screenPos[1] or 0) or 0
-        local sy = type(screenPos) == 'table' and (screenPos.y or screenPos[2] or 0) or 0
-        hoverRect = safeCall(function() return ImGui.IsMouseHoveringRect(sx + closeX - startX, sy + 2, sx + closeX - startX + xsize, sy + 24) end, false) or false
-    end
+    ImGui.SetCursorPos(closeX, startY + math.max(6, math.floor((headerHeight - 20) * 0.5)))
     local hoverPulse = 0.5 + (math.sin(os.clock() * 10.0) * 0.5)
-    local baseR = hoverRect and (0.52 + hoverPulse * 0.16) or 0.35
-    local baseG = hoverRect and (0.17 + hoverPulse * 0.05) or 0.09
-    local baseB = hoverRect and (0.09 + hoverPulse * 0.04) or 0.06
-
-    ImGui.SetCursorPos(closeX, startY + 9)
-    ImGui.PushStyleColor(ImGuiCol.Button, baseR, baseG, baseB, 0.96)
-    ImGui.PushStyleColor(ImGuiCol.ButtonHovered, math.min(1.0, baseR + 0.10), math.min(1.0, baseG + 0.06), math.min(1.0, baseB + 0.04), 1.0)
-    ImGui.PushStyleColor(ImGuiCol.ButtonActive, math.min(1.0, baseR + 0.16), math.min(1.0, baseG + 0.09), math.min(1.0, baseB + 0.06), 1.0)
+    local btn = theme.closeButton
+    local hov = theme.closeHover
+    local act = theme.closeActive
+    local pulseMix = hoverPulse * 0.08
+    ImGui.PushStyleColor(ImGuiCol.Button, btn[1], btn[2], btn[3], btn[4])
+    ImGui.PushStyleColor(ImGuiCol.ButtonHovered, math.min(1.0, hov[1] + pulseMix), math.min(1.0, hov[2] + pulseMix), math.min(1.0, hov[3] + pulseMix), hov[4])
+    ImGui.PushStyleColor(ImGuiCol.ButtonActive, act[1], act[2], act[3], act[4])
     if ImGui.SmallButton('X##' .. tostring(targetKey)) then
         state[targetKey] = false
         saveSettings()
@@ -1860,6 +1992,7 @@ local function drawHelpDialog()
         ImGui.BulletText('Use the floating bag icon to show or hide the main window.')
         ImGui.BulletText('Right click the floating bag icon to open config.')
         ImGui.BulletText('Middle click the floating bag icon to open quick actions.')
+        ImGui.BulletText('Destroy deletes the item currently on your cursor.')
 
         ImGui.Spacing()
         ImGui.TextWrapped('Helpful notes:')
@@ -1922,6 +2055,10 @@ mq.bind('/BEbags', function(line)
         syncBankCache()
     elseif arg == 'deposit' then
         performAutoDeposit()
+    elseif arg == 'destroy' then
+        destroyCursorItem()
+    elseif arg == 'drop' then
+        dropCursorItem()
     elseif arg == 'depositmode' then
         setDepositMode(not state.depositMode)
     elseif arg == 'save' then
@@ -1957,7 +2094,7 @@ mq.bind('/BEbags', function(line)
         saveSettings()
         echo(state.showHelpDialog and 'Help dialog opened.' or 'Help dialog closed.')
     else
-        echo('Usage: /BEbags config | packed | full | showempty | hideempty | inventory | bank | deposit | depositmode | syncbank | save | reset | autoresize on|off | value on|off | right on|off | show | hide | toggle | launcher show|hide | help')
+        echo('Usage: /BEbags config | packed | full | showempty | hideempty | inventory | bank | deposit | destroy | depositmode | syncbank | save | reset | autoresize on|off | value on|off | right on|off | show | hide | toggle | launcher show|hide | help')
     end
 end)
 
