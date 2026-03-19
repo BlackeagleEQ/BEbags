@@ -1,11 +1,5 @@
 # Changelog
 
-## v1.1.0
-- Added 4 selectable theme presets (Classic, Diablo, Emerald, Frost)
-- Added Destroy and Drop cursor actions
-- Improved quick actions menu (removed redundant buttons)
-- UI polish and stability improvements
-
 ## v1.0.0
 - Initial release
 - Inventory bag unification
@@ -13,6 +7,24 @@
 - Deposit functionality
 - Double-click inspect
 
+## v1.1.0
+- Added 4 selectable theme presets (Classic, Diablo, Emerald, Frost)
+- Added Destroy and Drop cursor actions
+- Improved quick actions menu (removed redundant buttons)
+- UI polish and stability improvements
+
 ## v1.1.1
 - Moved Destroy/Drop buttons to right side
 - Improved safety and layout
+
+## v1.1.2
+
+### Improvements
+- Bank snapshots now only load for the current character/server
+- Destroy and Drop are separated from Deposit for safer use
+- Deprecated bank sync/status config toggles removed
+- UI layout cleaned up for a more stable top bar
+
+### Notes
+- README and screenshots unchanged
+- This is a quality-of-life and safety update
