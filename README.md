@@ -10,27 +10,32 @@ No more opening bags one by one. Everything is in one place.
 
 ## ✨ What It Does
 
-- 📦 Combines all your bags into a single window
-- 🏦 Lets you view your bank anywhere after syncing
-- ⚡ Adds quick actions like deposit, destroy, and drop
-- 🖱️ Improves item interaction with smart click behavior
-- 🎨 Includes multiple UI themes
-- ⚙️ Fully customizable layout and behavior
+* 📦 Combines all your bags into a single window
+* 🏦 Lets you view your bank anywhere after syncing
+* ⚡ Adds quick actions like deposit, destroy, and drop
+* 🎯 Highlights valuable items automatically
+* 🖱️ Improves item interaction with smart click behavior
+* 🎨 Includes multiple UI themes
+* ⚙️ Fully customizable layout and behavior
 
 ---
 
 ## 🖼️ Screenshots
 
 ### Quick Actions Menu
+
 ![Quick Actions](./screenshots/quick_actions.png)
 
 ### Configuration Menu
+
 ![Config](./screenshots/config_menu.png)
 
 ### Help / Field Manual
+
 ![Help](./screenshots/field_manual.png)
 
 ### Inventory / Adventurer's Pack
+
 ![Inventory](./screenshots/inventory.png)
 
 ---
@@ -40,13 +45,13 @@ No more opening bags one by one. Everything is in one place.
 1. Download this repository or the latest release
 2. Place `BEbags.lua` into your MacroQuest `lua` folder:
 
-```text
+```
 MacroQuest/lua/BEbags.lua
 ```
 
 3. In game, run:
 
-```text
+```
 /lua run BEbags
 ```
 
@@ -55,97 +60,145 @@ MacroQuest/lua/BEbags.lua
 ## 🎮 How It Works
 
 ### 👜 Main Window
-- Displays all items from your inventory in one place
-- Use the top buttons to:
-  - Switch between **Inventory** and **Bank**
-  - Sort items
-  - Deposit items quickly
 
-### 🖱️ Mouse Controls
+* Displays all items from your inventory in one place
+* Top bar includes:
 
-| Action | Result |
-|--------|--------|
-| Left Click | Pick up item |
-| Double Left Click | Inspect item |
-| Right Click | Use item |
-| Ctrl + Right Click | Sell item (merchant required) |
-| Middle Click (icon) | Open quick actions |
+  * **Inventory / Bank / Deposit**
+  * **Help button (quick access to field manual)**
+  * **Destroy / Drop (danger actions on the right)**
 
-### ⚡ Quick Actions
+---
+
+## 💰 Value Highlight System
+
+BEbags automatically highlights items based on their vendor value:
+
+| Color     | Meaning                     |
+| --------- | --------------------------- |
+| 🟡 Gold   | **≥ 100pp** (high value)    |
+| 🟢 Green  | **≥ 10pp** (moderate value) |
+| ⚫ Default | Low value / vendor trash    |
+
+👉 Use this with **Value sorting** to quickly identify what to sell or keep.
+
+---
+
+## 🖱️ Mouse Controls
+
+| Action              | Result                              |
+| ------------------- | ----------------------------------- |
+| Left Click          | Pick up / move item                 |
+| Double Left Click   | Inspect item                        |
+| Right Click         | Use item                            |
+| Ctrl + Right Click  | Sell full stack (merchant required) |
+| Middle Click (icon) | Open quick actions                  |
+
+---
+
+## ⚡ Quick Actions
 
 Accessed via middle-click on the launcher icon:
 
-- Toggle packed mode
-- Reset sorting
-- Toggle value bar
-- Open help
-- Hide launcher
+* Toggle packed mode
+* Reset sorting
+* Toggle value bar
+* Open help
+* Hide launcher
 
-### ⚙️ Configuration
+---
+
+## ⚠️ Safe vs Dangerous Actions
+
+BEbags separates actions to prevent mistakes:
+
+### Safe Actions
+
+* Inventory
+* Bank
+* Deposit
+* Help
+
+### Dangerous Actions (right side, red)
+
+* Destroy → permanently deletes item
+* Drop → places item on the ground
+
+👉 These are intentionally separated to reduce misclick risk.
+
+---
+
+## ⚙️ Configuration
 
 Open config by:
-- Right-clicking the launcher icon
-- Or using:
 
-```text
+* Right-clicking the launcher icon
+* Or using:
+
+```
 /BEbags config
 ```
 
 From here you can:
-- Adjust layout and sizing
-- Toggle UI elements
-- Enable/disable features
-- Choose your theme
 
-### 🎨 Theme Presets
+* Adjust layout and sizing
+* Toggle UI elements
+* Enable/disable features
+* Choose your theme
 
-- Classic
-- Diablo
-- Emerald
-- Frost
+---
 
-### 🏦 Bank System
+## 🎨 Theme Presets
 
-- Open a banker once to sync your bank
-- After syncing, you can view your bank anywhere
+* Classic
+* Diablo
+* Emerald
+* Frost
 
-**Behavior:**
-- Bank open → live view
-- Bank closed → cached snapshot
+---
+
+## 🏦 Bank System
+
+* Open a banker once to sync your bank
+* After syncing, you can view your bank anywhere
+
+### Behavior:
+
+* Bank open → live view
+* Bank closed → cached snapshot (character-specific)
 
 ---
 
 ## 💡 Pro Tips
 
-- 🔥 Use Packed Mode  
+* 🔥 Use Packed Mode
   Keeps your inventory clean and compact
 
-- ⚡ Deposit is your best friend  
-  Quickly places items without showing empty slots
+* 💰 Use Value Highlights
+  Green and gold items are your money makers
 
-- 💰 Sell faster  
-  Ctrl + Right Click items while at a vendor
+* ⚡ Deposit is your best friend
+  Quickly stacks items or fills empty slots
 
-- 🏦 Bank anywhere  
+* 🧹 Clean junk instantly
+  Use Destroy / Drop for low-value items
+
+* 🏦 Bank anywhere
   Sync once, access anytime
 
-- 🧹 Clean junk instantly  
-  Destroy removes items permanently (no confirmation!)  
-  Drop places items on the ground
+* 🎯 Sort before selling
+  Value sorting makes selling much faster
 
-- 🎯 Sort before selling  
-  Value sorting helps identify high-value items quickly
-
-- 🎨 Try themes  
-  Diablo = high contrast  
-  Emerald = easy on the eyes  
+* 🎨 Try themes
+  Diablo = high contrast
+  Emerald = easy on the eyes
   Frost = clean and minimal
 
 ---
 
 ## 📜 Commands
 
-```text
+```
 /BEbags           → Toggle main window
 /BEbags config    → Open config
 /BEbags help      → Open help menu
