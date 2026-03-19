@@ -154,6 +154,8 @@ local function loadSettings()
         state.themePreset = 'Diablo'
     end
     state.diabloTheme = state.themePreset ~= 'Classic'
+    state.showBankSyncButton = false
+    state.showBankStatusText = false
     return true
 end
 
@@ -178,6 +180,34 @@ local function loadBankCache()
     if type(data.entries) ~= 'table' then
         data.entries = {}
     end
+
+    local currentCharacter = safeCall(function()
+        local n = mq.TLO.Me.CleanName()
+        if n == nil or n == '' then n = mq.TLO.Me.Name() end
+        return tostring(n or '')
+    end, '') or ''
+
+    local currentServer = safeCall(function()
+        local n = mq.TLO.EverQuest.Server()
+        return tostring(n or '')
+    end, '') or ''
+
+    local cacheCharacter = tostring(data.character or '')
+    local cacheServer = tostring(data.server or '')
+
+    if cacheCharacter ~= '' and cacheServer ~= '' then
+        if cacheCharacter ~= currentCharacter or cacheServer ~= currentServer then
+            state.bankCache = {
+                entries = {},
+                syncedAt = nil,
+                character = currentCharacter,
+                server = currentServer,
+            }
+            state.bankLastSignature = nil
+            return false
+        end
+    end
+
     state.bankCache = data
     return true
 end
@@ -1334,15 +1364,6 @@ local function drawConfigWindow(entries, bankMode)
             ImGui.SetTooltip('Manual fallback: shows empty slots even while you normally use Packed mode. It turns itself off after your cursor is empty.')
         end
 
-        ImGui.Text('Bank View')
-        if ImGui.SmallButton(state.showBankSyncButton and 'Show Sync Button: ON' or 'Show Sync Button: OFF') then
-            doAction('Toggled bank sync button visibility.', function() state.showBankSyncButton = not state.showBankSyncButton end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.showBankStatusText and 'Show Status Text: ON' or 'Show Status Text: OFF') then
-            doAction('Toggled bank status text visibility.', function() state.showBankStatusText = not state.showBankStatusText end)
-        end
-        ImGui.SameLine()
         if ImGui.SmallButton(state.bankAutoSyncEnabled and 'Auto Sync: ON' or 'Auto Sync: OFF') then
             doAction('Toggled bank auto sync.', function() state.bankAutoSyncEnabled = not state.bankAutoSyncEnabled end)
         end
@@ -1580,17 +1601,15 @@ local function drawViewButtons(bankMode)
         performAutoDeposit()
     end, 'Place the item on your cursor into the first matching stack or first empty bag slot in bag order for the current view. Bank deposits require the bank window to be open.')
 
-    local rightReserve = 0
-    if state.showBankSyncButton then
-        rightReserve = rightReserve + 72
-    end
-    if state.showBankStatusText then
-        rightReserve = rightReserve + 250
-    end
+    local windowWidth = ImGui.GetWindowWidth()
+    local rightMargin = 18
+    local dropWidth = 42
+    local destroyWidth = 58
+    local gap = 6
+    local dangerX = windowWidth - rightMargin - destroyWidth - gap - dropWidth
 
-    local dangerX = ImGui.GetWindowWidth() - 150 - rightReserve
-    if dangerX < 420 then
-        dangerX = 420
+    if dangerX < 520 then
+        dangerX = 520
     end
 
     ImGui.SetCursorPos(dangerX, rowY)
@@ -1602,25 +1621,6 @@ local function drawViewButtons(bankMode)
     drawDangerButton('Drop', function()
         dropCursorItem()
     end, 'Drop the item currently on your cursor onto the ground.')
-
-    if state.showBankSyncButton then
-        ImGui.SameLine()
-        if ImGui.SmallButton('Sync Bank') then
-            syncBankCache()
-        end
-        if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('Open your bank first, then click this to refresh the snapshot used from anywhere')
-        end
-    end
-
-    if state.showBankStatusText then
-        ImGui.SameLine()
-        if state.activeView == 'bank' then
-            ImGui.TextColored(0.82, 0.90, 1.00, 1.0, getBankStatusText(bankMode))
-        else
-            ImGui.TextColored(0.82, 0.90, 1.00, 1.0, 'View: Inventory')
-        end
-    end
 end
 
 
