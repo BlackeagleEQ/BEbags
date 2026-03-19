@@ -12,3 +12,7 @@
 - Bank sync and viewing
 - Deposit functionality
 - Double-click inspect
+
+## v1.1.1
+- Moved Destroy/Drop buttons to right side
+- Improved safety and layout
