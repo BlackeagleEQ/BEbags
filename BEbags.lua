@@ -1601,18 +1601,29 @@ local function drawViewButtons(bankMode)
         performAutoDeposit()
     end, 'Place the item on your cursor into the first matching stack or first empty bag slot in bag order for the current view. Bank deposits require the bank window to be open.')
 
+    ImGui.SameLine()
+    drawViewButton('Help', false, function()
+        state.showHelpDialog = true
+        saveSettings()
+        echo('Help dialog opened.')
+    end, 'Open the field manual.')
+
     local windowWidth = ImGui.GetWindowWidth()
     local rightMargin = 18
-    local dropWidth = 42
     local destroyWidth = 58
+    local dropWidth = 42
+    local dividerWidth = 10
     local gap = 6
-    local dangerX = windowWidth - rightMargin - destroyWidth - gap - dropWidth
+    local dangerX = windowWidth - rightMargin - destroyWidth - gap - dropWidth - gap - dividerWidth
 
     if dangerX < 520 then
         dangerX = 520
     end
 
     ImGui.SetCursorPos(dangerX, rowY)
+    ImGui.TextDisabled('|')
+
+    ImGui.SameLine()
     drawDangerButton('Destroy', function()
         destroyCursorItem()
     end, 'Destroy the item currently on your cursor. This cannot be undone.')
@@ -2006,28 +2017,51 @@ local function drawHelpDialog()
             return
         end
         ImGui.BeginChild('##help_content', 0, 0, false)
-        ImGui.TextWrapped('BEbags combines the contents of all of your carried bags into one easy-to-read window, and also supports a synced bank browser.')
-        ImGui.Spacing()
-        ImGui.TextWrapped('What you can do:')
-        ImGui.BulletText('See all bag items in one place instead of opening each bag one by one.')
-        ImGui.BulletText('Click Inventory to view your carried bags.')
-        ImGui.BulletText('Click Bank to view your bank. If your bank is open, you will see it live. If not, you will see your last synced snapshot.')
-        ImGui.BulletText('Opening your bank now auto-syncs a fresh snapshot. Manual bank sync and bank status text can be re-enabled from Config if you want them back.')
-        ImGui.BulletText('Single left click an item to pick it up, place it, or swap it.')
-        ImGui.BulletText('Double left click: inspect item.')
-        ImGui.BulletText('Right click an inventory item to use it if it is a clicky.')
-        ImGui.BulletText('Ctrl + right click an inventory item while a merchant window is open to sell the full stack.')
-        ImGui.BulletText('Use the sort buttons at the top to quickly sort by bag order, value, or name.')
-        ImGui.BulletText('Use the floating bag icon to show or hide the main window.')
-        ImGui.BulletText('Right click the floating bag icon to open config.')
-        ImGui.BulletText('Middle click the floating bag icon to open quick actions.')
-        ImGui.BulletText('Destroy deletes the item currently on your cursor.')
+
+        ImGui.TextWrapped('BEbags puts your bags and synced bank view into one cleaner window.')
 
         ImGui.Spacing()
-        ImGui.TextWrapped('Helpful notes:')
-        ImGui.BulletText('Packed mode hides empty slots. Full mode can show them. Deposit mode is a quick temporary way to reveal empty slots without changing your normal mode.')
+        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Quick Overview')
+        ImGui.Separator()
+        ImGui.BulletText('Inventory shows all carried bag items in one place.')
+        ImGui.BulletText('Bank shows live contents when open, otherwise your last synced snapshot.')
+        ImGui.BulletText('Opening the bank auto-syncs a fresh snapshot for that character.')
+
+        ImGui.Spacing()
+        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Controls')
+        ImGui.Separator()
+        ImGui.BulletText('Left Click: pick up, place, or swap an item.')
+        ImGui.BulletText('Double Left Click: inspect item.')
+        ImGui.BulletText('Right Click: use a clicky item.')
+        ImGui.BulletText('Ctrl + Right Click: sell full stack at a merchant.')
+
+        ImGui.Spacing()
+        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Quick Actions')
+        ImGui.Separator()
+        ImGui.BulletText('Deposit: places your cursor item into the first matching stack or empty slot.')
+        ImGui.BulletText('Destroy: permanently deletes the cursor item.')
+        ImGui.BulletText('Drop: places the cursor item on the ground.')
+        ImGui.BulletText('Launcher Left Click: show or hide the main window.')
+        ImGui.BulletText('Launcher Right Click: open config.')
+        ImGui.BulletText('Launcher Middle Click: open quick actions.')
+
+        ImGui.Spacing()
+        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Value Highlights')
+        ImGui.Separator()
+        ImGui.TextColored(1.0, 0.85, 0.20, 1.0, 'Gold')
+        ImGui.SameLine()
+        ImGui.Text(' - item is worth 100pp or more')
+        ImGui.TextColored(0.60, 1.0, 0.60, 1.0, 'Green')
+        ImGui.SameLine()
+        ImGui.Text(' - item is worth 10pp or more')
+
+        ImGui.Spacing()
+        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Tips')
+        ImGui.Separator()
+        ImGui.BulletText('Packed mode hides empty slots for a cleaner view.')
+        ImGui.BulletText('Manual Deposit Mode can temporarily reveal empty slots if needed.')
         ImGui.BulletText('Cached bank view is browse-only when you are away from a banker.')
-        ImGui.BulletText('Most settings save automatically, so your layout stays the way you left it.')
+        ImGui.BulletText('Most settings save automatically.')
 
         ImGui.Spacing()
         if ImGui.SmallButton('Close Help') then
