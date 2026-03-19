@@ -28,3 +28,16 @@
 ### Notes
 - README and screenshots unchanged
 - This is a quality-of-life and safety update
+
+## v1.1.3
+
+### Added
+- Help button on main UI
+- Value highlight documentation
+
+### Improved
+- Field manual layout (more readable)
+- Safer action button separation
+
+### Fixed
+- UI alignment issues
