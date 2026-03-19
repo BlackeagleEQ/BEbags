@@ -1546,6 +1546,22 @@ local function drawViewButtons(bankMode)
         end
     end
 
+    local function drawDangerButton(label, onClick, tooltip)
+        ImGui.PushStyleColor(ImGuiCol.Button, 0.36, 0.10, 0.10, 0.88)
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.54, 0.14, 0.14, 0.95)
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.66, 0.18, 0.18, 0.98)
+        local clicked = ImGui.SmallButton(label)
+        ImGui.PopStyleColor(3)
+        if clicked then
+            onClick()
+        end
+        if ImGui.IsItemHovered() and tooltip then
+            ImGui.SetTooltip(tooltip)
+        end
+    end
+
+    local rowY = ImGui.GetCursorPosY()
+
     drawViewButton('Inventory', state.activeView == 'inventory', function()
         state.activeView = 'inventory'
         saveSettings()
@@ -1562,15 +1578,28 @@ local function drawViewButtons(bankMode)
     ImGui.SameLine()
     drawViewButton('Deposit', false, function()
         performAutoDeposit()
-    end, 'Place the item on your cursor into the first empty bag slot in bag order for the current view. Bank deposits require the bank window to be open.')
+    end, 'Place the item on your cursor into the first matching stack or first empty bag slot in bag order for the current view. Bank deposits require the bank window to be open.')
 
-    ImGui.SameLine()
-    drawViewButton('Destroy', false, function()
+    local rightReserve = 0
+    if state.showBankSyncButton then
+        rightReserve = rightReserve + 72
+    end
+    if state.showBankStatusText then
+        rightReserve = rightReserve + 250
+    end
+
+    local dangerX = ImGui.GetWindowWidth() - 150 - rightReserve
+    if dangerX < 420 then
+        dangerX = 420
+    end
+
+    ImGui.SetCursorPos(dangerX, rowY)
+    drawDangerButton('Destroy', function()
         destroyCursorItem()
     end, 'Destroy the item currently on your cursor. This cannot be undone.')
 
     ImGui.SameLine()
-    drawViewButton('Drop', false, function()
+    drawDangerButton('Drop', function()
         dropCursorItem()
     end, 'Drop the item currently on your cursor onto the ground.')
 
