@@ -19,9 +19,42 @@
 
 No more opening bags one by one. Everything is in one place.
 
----
+## 🔄 Sorting System
 
-## ✨ What It Does
+Items can be sorted using the dropdown:
+
+* Bag Order
+* High → Low (most valuable first)
+* Low → High
+* Name A → Z
+* Name Z → A
+
+👉 **Sell All uses the current sort order**, allowing controlled selling.
+
+
+
+## 💰 Sell All System
+
+* Sells all items worth **≥ 1pp**
+* Works only when a merchant is open
+* Processes items in **current sort order**
+* Skips all **KEEP items**
+* Handles full stacks automatically
+
+
+
+## 🛡️ KEEP System
+
+* Toggle KEEP with:
+  * **Alt + Right Click**
+* KEEP items:
+  * ❌ Are never sold
+  * ❌ Do NOT glow
+  * ✅ Are pushed to the end of sorts
+
+Removing KEEP restores normal behavior.
+
+
 
 * 📦 Combines all your bags into a single window
 * 🏦 Lets you view your bank anywhere after syncing
@@ -31,48 +64,32 @@ No more opening bags one by one. Everything is in one place.
 * 🎨 Includes multiple UI themes
 * ⚙️ Fully customizable layout and behavior
 
----
+
 
 ## 🖼️ Screenshots
 
-### Quick Actions Menu
+### BEbags - Inventory Management
 
-![Quick Actions](./screenshots/quick_actions.png)
+![BEBags](./screenshots/BEbags_menus.png)
 
-### Configuration Menu
 
-![Config](./screenshots/config_menu.png)
-
-### Help / Field Manual
-
-![Help](./screenshots/field_manual.png)
-
-### Inventory / Adventurer's Pack
-
-![Inventory](./screenshots/inventory.png)
-
----
 
 ## 🚀 Installation
 
 1. Download this repository or the latest release
-2. Place `BEbags folder` into your MacroQuest `lua` folder:
+2. Place `BEbags-version` folder into your MacroQuest `lua` folder:
 
 ```
 MacroQuest/lua/
 ```
-
-3. Rename `Bebags-<version>` folder to `BEbags` if necessary
-
-
-
+3. If needed, rename folder to just `BEbags`
 4. In game, run:
 
 ```
 /lua run BEbags
 ```
 
----
+
 
 ## 🎮 How It Works
 
@@ -85,33 +102,34 @@ MacroQuest/lua/
   * **Help button (quick access to field manual)**
   * **Destroy / Drop (danger actions on the right)**
 
----
+
 
 ## 💰 Value Highlight System
 
 BEbags automatically highlights items based on their vendor value:
 
 | Color     | Meaning                     |
-| --------- | --------------------------- |
+|  |  |
 | 🟡 Gold   | **≥ 100pp** (high value)    |
 | 🟢 Green  | **≥ 10pp** (moderate value) |
 | ⚫ Default | Low value / vendor trash    |
+| 🏷️ KEEP  | Protected (no glow)        |    |
 
 👉 Use this with **Value sorting** to quickly identify what to sell or keep.
 
----
+
 
 ## 🖱️ Mouse Controls
 
 | Action              | Result                              |
-| ------------------- | ----------------------------------- |
+| - | -- |
 | Left Click          | Pick up / move item                 |
 | Double Left Click   | Inspect item                        |
 | Right Click         | Use item                            |
 | Ctrl + Right Click  | Sell full stack (merchant required) |
 | Middle Click (icon) | Open quick actions                  |
 
----
+
 
 ## ⚡ Quick Actions
 
@@ -123,7 +141,7 @@ Accessed via middle-click on the launcher icon:
 * Open help
 * Hide launcher
 
----
+
 
 ## ⚠️ Safe vs Dangerous Actions
 
@@ -143,7 +161,7 @@ BEbags separates actions to prevent mistakes:
 
 👉 These are intentionally separated to reduce misclick risk.
 
----
+
 
 ## ⚙️ Configuration
 
@@ -163,7 +181,7 @@ From here you can:
 * Enable/disable features
 * Choose your theme
 
----
+
 
 ## 🎨 Theme Presets
 
@@ -172,7 +190,7 @@ From here you can:
 * Emerald
 * Frost
 
----
+
 
 ## 🏦 Bank System
 
@@ -184,7 +202,7 @@ From here you can:
 * Bank open → live view
 * Bank closed → cached snapshot (character-specific)
 
----
+
 
 ## 💡 Pro Tips
 
@@ -211,7 +229,7 @@ From here you can:
   Emerald = easy on the eyes
   Frost = clean and minimal
 
----
+
 
 ## 📜 Commands
 
@@ -223,19 +241,19 @@ From here you can:
 /BEbags drop      → Drop item on ground
 ```
 
----
+
 
 ## 👤 Author
 
 BlackeagleEQ
 
----
+
 
 ## ❤️ Credits
 
 Built for the AscendantEQ community using MacroQuest Lua.
 
----
+
 
 ## 🔥 Why BEbags?
 

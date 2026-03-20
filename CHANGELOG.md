@@ -41,3 +41,32 @@
 
 ### Fixed
 - UI alignment issues
+
+
+## v1.2.0
+
+### Added
+- Sell All system (≥ 1pp) with full stack support
+- Sorting system upgraded for better visual experience (Drop down menu with: Bag Order, High→Low, Low→High, Name A→Z, Name Z→A)
+- KEEP (Do Not Sell) toggle via Alt + Right Click
+- Sell queue system for reliable bulk selling
+
+### Improved
+- Sell All now respects current sort order
+- UI layout redesigned for clarity and usability
+- Sort control moved and simplified (dropdown next to Help)
+- Action grouping improved (safe vs dangerous actions)
+- Field manual rewritten for clarity and accuracy
+- Overall UI alignment and spacing polish
+
+### Changed
+- Value highlighting suppressed on KEEP items
+- Removing KEEP restores normal glow behavior
+
+### Fixed
+- Multiple UI alignment inconsistencies
+
+### Notes
+- This release focuses on usability, safety, and polish
+- BEbags is currently considered feature-complete for core inventory management until new features are added
+

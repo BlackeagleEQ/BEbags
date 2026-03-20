@@ -42,6 +42,8 @@ local state = {
     showLauncher = true,
     showQuickHelp = false,
     pendingSell = nil,
+    pendingSellQueue = nil,
+    pendingSellQueueReadyAt = 0,
     showHelpDialog = false,
     activeView = 'inventory', -- inventory | bank
     bankCache = {
@@ -60,15 +62,18 @@ local state = {
     pendingLeftClick = nil,
     diabloTheme = true,
     themePreset = 'Diablo',
+    doNotSellItems = {},
 }
 
 local headerFont = nil
 local headerFontLoaded = false
 
+local buildInventoryEntries
+local sortEntries
+
 
 local function echo(msg)
-    mq.cmdf('/echo \\ag[%s]\\ax %s', SCRIPT_NAME, tostring(msg))
-    state.statusMessage = tostring(msg)
+    mq.cmdf('/echo [%s] %s', SCRIPT_NAME, tostring(msg))
 end
 
 local function safeCall(fn, fallback)
@@ -109,7 +114,7 @@ local function saveSettings()
         'showConfigWindow', 'autoResizeMain', 'mainNoScrollbar',
         'mainNoTitleBar', 'showMainValueBar', 'showMainWindow', 'showLauncher',
         'showHelpDialog', 'widthFudge', 'heightFudge', 'activeView',
-        'showBankSyncButton', 'showBankStatusText', 'depositMode', 'leftClickDelay', 'diabloTheme', 'themePreset',
+        'showBankSyncButton', 'showBankStatusText', 'depositMode', 'leftClickDelay', 'diabloTheme', 'themePreset', 'doNotSellItems',
     }
 
     local f, err = io.open(configPath, 'w')
@@ -240,6 +245,7 @@ local function resetSettings()
     state.pendingLeftClick = nil
     state.diabloTheme = true
     state.themePreset = 'Diablo'
+    state.doNotSellItems = {}
     saveSettings()
     echo('Settings reset to defaults.')
 end
@@ -356,6 +362,60 @@ local function getItemName(item, fallback)
     end, fallback or '(empty)')
 end
 
+
+local function getDoNotSellKeyFromItem(item)
+    if not item then return nil end
+    local itemID = getItemID(item)
+    if itemID and itemID > 0 then
+        return string.format('id:%d', itemID)
+    end
+    local itemName = string.lower(getItemName(item, '') or '')
+    if itemName ~= '' then
+        return 'name:' .. itemName
+    end
+    return nil
+end
+
+local function getDoNotSellKeyFromEntry(entry)
+    if not entry or entry.isEmpty then return nil end
+    if entry.doNotSellKey and entry.doNotSellKey ~= '' then
+        return entry.doNotSellKey
+    end
+    if entry.item then
+        return getDoNotSellKeyFromItem(entry.item)
+    end
+    local itemID = tonumber(entry.itemID or 0) or 0
+    if itemID > 0 then
+        return string.format('id:%d', itemID)
+    end
+    local itemName = string.lower(tostring(entry.itemName or ''))
+    if itemName ~= '' and itemName ~= '(empty)' then
+        return 'name:' .. itemName
+    end
+    return nil
+end
+
+local function isDoNotSellEntry(entry)
+    local key = getDoNotSellKeyFromEntry(entry)
+    return key ~= nil and state.doNotSellItems and state.doNotSellItems[key] == true
+end
+
+local function toggleDoNotSellEntry(entry)
+    local key = getDoNotSellKeyFromEntry(entry)
+    if not key then
+        echo('Unable to flag that item.')
+        return false
+    end
+    state.doNotSellItems = state.doNotSellItems or {}
+    local newValue = not state.doNotSellItems[key]
+    state.doNotSellItems[key] = newValue or nil
+    entry.doNotSell = newValue
+    entry.doNotSellKey = key
+    saveSettings()
+    echo(string.format('%s %s for Do Not Sell.', newValue and 'Flagged' or 'Removed', entry.itemName or 'item'))
+    return true
+end
+
 local function getLauncherBagItem()
     for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
         local bag = getBag(bagSlot)
@@ -418,7 +478,7 @@ end
 local function queueMerchantSell(packNum, subslot, itemName, stackSize)
     if not merchantWindowOpen() then
         echo('Merchant window is not open.')
-        return
+        return false
     end
     selectItemForMerchantSell(packNum, subslot)
     state.pendingSell = {
@@ -429,6 +489,102 @@ local function queueMerchantSell(packNum, subslot, itemName, stackSize)
         readyAt = os.clock() + 0.12,
     }
     echo(string.format('Queued vendor sell for %s x%d.', (itemName or 'item'), tonumber(stackSize) or 1))
+    return true
+end
+
+local function startNextQueuedSell()
+    if state.pendingSell then
+        return false
+    end
+    if not state.pendingSellQueue or #state.pendingSellQueue == 0 then
+        state.pendingSellQueue = nil
+        state.pendingSellQueueReadyAt = 0
+        return false
+    end
+    if not merchantWindowOpen() then
+        echo('Merchant window is not open.')
+        state.pendingSellQueue = nil
+        state.pendingSellQueueReadyAt = 0
+        return false
+    end
+
+    local nextSell = table.remove(state.pendingSellQueue, 1)
+    if not nextSell then
+        state.pendingSellQueue = nil
+        state.pendingSellQueueReadyAt = 0
+        return false
+    end
+
+    selectItemForMerchantSell(nextSell.packNum, nextSell.subslot)
+    state.pendingSell = {
+        packNum = nextSell.packNum,
+        subslot = nextSell.subslot,
+        itemName = nextSell.itemName or '',
+        stackSize = tonumber(nextSell.stackSize) or 1,
+        readyAt = os.clock() + 0.18,
+    }
+    state.pendingSellQueueReadyAt = 0
+    return true
+end
+
+local function bulkSellByValue(minValue)
+    local function quickFormatMoney(copper)
+        copper = math.max(tonumber(copper) or 0, 0)
+        local pp = math.floor(copper / 1000)
+        local gp = math.floor((copper % 1000) / 100)
+        local sp = math.floor((copper % 100) / 10)
+        local cp = copper % 10
+        return string.format('%dpp %dgp %dsp %dcp', pp, gp, sp, cp)
+    end
+
+    minValue = tonumber(minValue) or 0
+    if minValue < 1 then minValue = 1 end
+
+    if not merchantWindowOpen() then
+        echo('You must have a merchant open to bulk sell.')
+        return false
+    end
+
+    local entries = buildInventoryEntries()
+    sortEntries(entries)
+
+    local queue = {}
+    local count = 0
+    local totalValue = 0
+
+    for _, entry in ipairs(entries) do
+        if not entry.isEmpty then
+            local totalItemValue = tonumber(entry.totalValue) or 0
+            local isProtected = entry.doNotSell == true
+
+            if not isProtected and totalItemValue >= minValue then
+                queue[#queue + 1] = {
+                    packNum = entry.packNum,
+                    subslot = entry.subslot,
+                    itemName = entry.itemName,
+                    stackSize = tonumber(entry.stack) or 1,
+                }
+                count = count + 1
+                totalValue = totalValue + totalItemValue
+            end
+        end
+    end
+
+    if count == 0 then
+        echo(string.format('No eligible items worth %s or more were found.', quickFormatMoney(minValue)))
+        return false
+    end
+
+    state.pendingSellQueue = queue
+    state.pendingSellQueueReadyAt = 0
+    echo(string.format(
+        'Bulk sell queued: %d items worth %s or more (%s total), using current sort order.',
+        count,
+        quickFormatMoney(minValue),
+        quickFormatMoney(totalValue)
+    ))
+    startNextQueuedSell()
+    return true
 end
 
 local function formatMoney(cp)
@@ -469,7 +625,7 @@ local function getBankBagName(slotID)
     end, string.format('Bank %d', bankNum))
 end
 
-local function buildInventoryEntries()
+function buildInventoryEntries()
     local out = {}
     local order = 0
     for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
@@ -489,6 +645,8 @@ local function buildInventoryEntries()
             if include then
                 local stack = math.max(getItemStack(item), 1)
                 local itemValue = getItemValue(item)
+                local itemID = getItemID(item)
+                local doNotSellKey = getDoNotSellKeyFromItem(item)
                 out[#out + 1] = {
                     source = 'inventory',
                     interactive = true,
@@ -500,6 +658,9 @@ local function buildInventoryEntries()
                     order = order,
                     itemName = getItemName(item, '(empty)'),
                     stack = stack,
+                    itemID = itemID,
+                    doNotSellKey = doNotSellKey,
+                    doNotSell = doNotSellKey ~= nil and state.doNotSellItems[doNotSellKey] == true or false,
                     itemValue = itemValue,
                     totalValue = itemValue * stack,
                     iconID = getItemIcon(item),
@@ -530,6 +691,8 @@ local function buildLiveBankEntries()
             if include then
                 local stack = math.max(getItemStack(item), 1)
                 local itemValue = getItemValue(item)
+                local itemID = getItemID(item)
+                local doNotSellKey = getDoNotSellKeyFromItem(item)
                 out[#out + 1] = {
                     source = 'bank_live',
                     interactive = true,
@@ -541,6 +704,9 @@ local function buildLiveBankEntries()
                     order = order,
                     itemName = getItemName(item, '(empty)'),
                     stack = stack,
+                    itemID = itemID,
+                    doNotSellKey = doNotSellKey,
+                    doNotSell = doNotSellKey ~= nil and state.doNotSellItems[doNotSellKey] == true or false,
                     itemValue = itemValue,
                     totalValue = itemValue * stack,
                     iconID = getItemIcon(item),
@@ -588,6 +754,9 @@ local function syncBankCache(silent)
             order = entry.order,
             itemName = entry.itemName,
             stack = entry.stack,
+            itemID = entry.itemID,
+            doNotSellKey = entry.doNotSellKey,
+            doNotSell = entry.doNotSell,
             itemValue = entry.itemValue,
             totalValue = entry.totalValue,
             iconID = entry.iconID,
@@ -660,6 +829,9 @@ local function buildBankEntries()
             order = entry.order,
             itemName = entry.itemName,
             stack = entry.stack,
+            itemID = entry.itemID,
+            doNotSellKey = entry.doNotSellKey,
+            doNotSell = entry.doNotSellKey ~= nil and state.doNotSellItems[entry.doNotSellKey] == true or (entry.doNotSell == true),
             itemValue = entry.itemValue,
             totalValue = entry.totalValue,
             iconID = entry.iconID or 0,
@@ -675,27 +847,48 @@ local function buildEntries()
     return buildInventoryEntries(), 'live'
 end
 
-local function sortEntries(entries)
+function sortEntries(entries)
+    local function keepLast(a, b)
+        local adns = isDoNotSellEntry(a)
+        local bdns = isDoNotSellEntry(b)
+        if adns ~= bdns then
+            return not adns
+        end
+        return nil
+    end
+
     if state.sortMode == 'bag' then
-        table.sort(entries, function(a, b) return a.order < b.order end)
+        table.sort(entries, function(a, b)
+            local keepCmp = keepLast(a, b)
+            if keepCmp ~= nil then return keepCmp end
+            return a.order < b.order
+        end)
     elseif state.sortMode == 'stack_value_desc' then
         table.sort(entries, function(a, b)
+            local keepCmp = keepLast(a, b)
+            if keepCmp ~= nil then return keepCmp end
             if a.totalValue == b.totalValue then return a.order < b.order end
             return a.totalValue > b.totalValue
         end)
     elseif state.sortMode == 'stack_value_asc' then
         table.sort(entries, function(a, b)
+            local keepCmp = keepLast(a, b)
+            if keepCmp ~= nil then return keepCmp end
             if a.totalValue == b.totalValue then return a.order < b.order end
             return a.totalValue < b.totalValue
         end)
     elseif state.sortMode == 'name_asc' then
         table.sort(entries, function(a, b)
+            local keepCmp = keepLast(a, b)
+            if keepCmp ~= nil then return keepCmp end
             local an, bn = string.lower(a.itemName or ''), string.lower(b.itemName or '')
             if an == bn then return a.order < b.order end
             return an < bn
         end)
     elseif state.sortMode == 'name_desc' then
         table.sort(entries, function(a, b)
+            local keepCmp = keepLast(a, b)
+            if keepCmp ~= nil then return keepCmp end
             local an, bn = string.lower(a.itemName or ''), string.lower(b.itemName or '')
             if an == bn then return a.order < b.order end
             return an > bn
@@ -801,6 +994,9 @@ local function drawTooltip(entry, hasCursor, bankMode)
         if entry.stack > 1 then
             ImGui.Text('Stack total: ' .. formatMoney(entry.totalValue))
         end
+        if isDoNotSellEntry(entry) then
+            ImGui.TextColored(0.82, 0.64, 1.0, 1.0, 'DO NOT SELL')
+        end
     else
         ImGui.TextDisabled('Empty slot')
     end
@@ -827,6 +1023,7 @@ local function drawTooltip(entry, hasCursor, bankMode)
             if state.activeView ~= 'bank' then
                 ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Ctrl + right click: sell full stack to merchant')
             end
+            ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Alt + right click: toggle Do Not Sell')
         end
     end
 
@@ -882,7 +1079,9 @@ local function pushGlowColors(entry, hasCursor)
         return
     end
 
-    if not state.showValueGlow then
+    local isProtected = isDoNotSellEntry(entry)
+
+    if not state.showValueGlow or isProtected then
         ImGui.PushStyleColor(ImGuiCol.Button, 0.00, 0.00, 0.00, 0.10)
         ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.22, 0.22, 0.22, 0.18)
         ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.28, 0.28, 0.28, 0.24)
@@ -904,6 +1103,15 @@ local function pushGlowColors(entry, hasCursor)
     end
 end
 
+local function drawKeepMarker(entry)
+    if not isDoNotSellEntry(entry) then return end
+    local cx, cy = ImGui.GetCursorPos()
+    ImGui.SetWindowFontScale(0.56)
+    ImGui.SetCursorPos(cx + 2, cy + 1)
+    ImGui.TextColored(0.82, 0.64, 1.0, 0.95, 'KEEP')
+    ImGui.SetWindowFontScale(1.0)
+end
+
 local function drawEntry(entry, index, hasCursor, bankMode)
     local iconID = tonumber(entry.iconID or 0) or 0
     local cx, cy = ImGui.GetCursorPos()
@@ -920,6 +1128,9 @@ local function drawEntry(entry, index, hasCursor, bankMode)
         ImGui.SetCursorPos(cx, cy)
         drawStackText(entry.stack)
     end
+
+    ImGui.SetCursorPos(cx, cy)
+    drawKeepMarker(entry)
 
     ImGui.SetCursorPos(cx, cy)
     pushGlowColors(entry, hasCursor)
@@ -953,9 +1164,17 @@ local function drawEntry(entry, index, hasCursor, bankMode)
     if entry.item and entry.interactive and state.rightClickEnabled and ImGui.IsItemHovered() and ImGui.IsMouseReleased(1) then
         local ctrlDown = (safeCall(function() return ImGui.IsKeyDown(ImGuiKey.LeftCtrl) end, false) or false)
             or (safeCall(function() return ImGui.IsKeyDown(ImGuiKey.RightCtrl) end, false) or false)
+        local altDown = (safeCall(function() return ImGui.IsKeyDown(ImGuiKey.LeftAlt) end, false) or false)
+            or (safeCall(function() return ImGui.IsKeyDown(ImGuiKey.RightAlt) end, false) or false)
 
-        if ctrlDown and state.activeView ~= 'bank' then
-            queueMerchantSell(entry.packNum, entry.subslot, entry.itemName, entry.stack)
+        if altDown then
+            toggleDoNotSellEntry(entry)
+        elseif ctrlDown and state.activeView ~= 'bank' then
+            if isDoNotSellEntry(entry) then
+                echo(string.format('Protected item not sold: %s', entry.itemName or 'item'))
+            else
+                queueMerchantSell(entry.packNum, entry.subslot, entry.itemName, entry.stack)
+            end
         else
             if state.activeView == 'bank' then
                 bankItemnotifyRight(entry.bankNum, entry.subslot)
@@ -1169,37 +1388,62 @@ local function dropCursorItem()
     return true
 end
 
+local function getSortModeLabel(mode)
+    if mode == 'stack_value_desc' then return 'High->Low' end
+    if mode == 'stack_value_asc' then return 'Low->High' end
+    if mode == 'name_asc' then return 'Name A->Z' end
+    if mode == 'name_desc' then return 'Name Z->A' end
+    return 'Bag Order'
+end
+
+local function getSortModeShortLabel(mode)
+    if mode == 'stack_value_desc' then return 'High ↓' end
+    if mode == 'stack_value_asc' then return 'Low ↑' end
+    if mode == 'name_asc' then return 'Name A-Z' end
+    if mode == 'name_desc' then return 'Name Z-A' end
+    return 'Bag'
+end
+
 local function drawTopSortButtons()
-    local function sortBtn(label, mode, msg)
-        local isActive = (state.sortMode == mode)
-        if isActive then
-            ImGui.PushStyleColor(ImGuiCol.Button, 0.18, 0.45, 0.18, 0.45)
-            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.18, 0.55, 0.18, 0.55)
-            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.18, 0.65, 0.18, 0.65)
-        end
+    local options = {
+        { label = 'Bag Order', mode = 'bag', msg = 'Sort set to bag order.' },
+        { label = 'High->Low', mode = 'stack_value_desc', msg = 'Sort set to high to low.' },
+        { label = 'Low->High', mode = 'stack_value_asc', msg = 'Sort set to low to high.' },
+        { label = 'Name A->Z', mode = 'name_asc', msg = 'Sort set to name A to Z.' },
+        { label = 'Name Z->A', mode = 'name_desc', msg = 'Sort set to name Z to A.' },
+    }
 
-        local clicked = ImGui.SmallButton(label)
+    local preview = getSortModeLabel(state.sortMode)
+    local comboLabel = '##bebags_sort_combo'
+    local style = ImGui.GetStyle()
+    local comboWidth = math.max(145, ImGui.CalcTextSize(preview) + (style.FramePadding.x * 2) + 18)
 
-        if isActive then
-            ImGui.PopStyleColor(3)
-        end
+    -- Match SmallButton row height as closely as possible without shifting the shared row baseline.
+    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, style.FramePadding.x, 0)
+    ImGui.SetNextItemWidth(comboWidth)
 
-        if clicked then
-            state.sortMode = mode
-            saveSettings()
-            echo(msg)
+    if ImGui.BeginCombo(comboLabel, preview, ImGuiComboFlags.HeightLarge) then
+        for _, opt in ipairs(options) do
+            local selected = (state.sortMode == opt.mode)
+            if ImGui.Selectable(opt.label, selected) then
+                if state.sortMode ~= opt.mode then
+                    state.sortMode = opt.mode
+                    saveSettings()
+                    echo(opt.msg)
+                end
+            end
+            if selected then
+                ImGui.SetItemDefaultFocus()
+            end
         end
+        ImGui.EndCombo()
     end
 
-    sortBtn('Bag Order', 'bag', 'Sort set to bag order.')
-    ImGui.SameLine()
-    sortBtn('Value High->Low', 'stack_value_desc', 'Sort set to value high to low.')
-    ImGui.SameLine()
-    sortBtn('Value Low->High', 'stack_value_asc', 'Sort set to value low to high.')
-    ImGui.SameLine()
-    sortBtn('Name A->Z', 'name_asc', 'Sort set to name A to Z.')
-    ImGui.SameLine()
-    sortBtn('Name Z->A', 'name_desc', 'Sort set to name Z to A.')
+    ImGui.PopStyleVar()
+
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('Choose how items are displayed and how Sell All queues items.')
+    end
 end
 
 local function setMainWindowSize(entryCount)
@@ -1215,7 +1459,7 @@ local function setMainWindowSize(entryCount)
     local scrollbarAllowance = state.mainNoScrollbar and 0 or 20
     local titleBarAllowance = state.mainNoTitleBar and 0 or 28
     local valueBarAllowance = state.showMainValueBar and 26 or 0
-    local toolbarAllowance = 52
+    local toolbarAllowance = 86
 
     local width = (cols * state.slotSize)
         + ((cols - 1) * itemSpacingX)
@@ -1260,6 +1504,9 @@ local function drawConfigWindow(entries, bankMode)
         ImGui.Separator()
 
         ImGui.Text('Current View: ' .. getViewLabel())
+        local keepCount = 0
+        for _ in pairs(state.doNotSellItems or {}) do keepCount = keepCount + 1 end
+        ImGui.Text('Do Not Sell Flags: ' .. tostring(keepCount))
         if state.activeView == 'bank' and state.showBankStatusText then
             ImGui.TextWrapped(getBankStatusText(bankMode))
         end
@@ -1549,16 +1796,29 @@ local function drawLauncher()
 end
 
 local function drawViewButtons(bankMode)
-    local function drawViewButton(label, active, onClick, tooltip)
-        if active then
+    local function drawViewButton(label, active, onClick, tooltip, style)
+        style = style or 'default'
+
+        if style == 'primary' then
+            ImGui.PushStyleColor(ImGuiCol.Button, 0.34, 0.25, 0.10, 0.90)
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.44, 0.32, 0.13, 0.96)
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.52, 0.38, 0.16, 1.00)
+        elseif active then
             ImGui.PushStyleColor(ImGuiCol.Button, 0.18, 0.45, 0.18, 0.45)
             ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.18, 0.55, 0.18, 0.55)
             ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.18, 0.65, 0.18, 0.65)
+        elseif style == 'secondary' then
+            ImGui.PushStyleColor(ImGuiCol.Button, 0.24, 0.18, 0.10, 0.82)
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.34, 0.24, 0.12, 0.90)
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.42, 0.30, 0.15, 0.95)
         end
+
         local clicked = ImGui.SmallButton(label)
-        if active then
+
+        if style == 'primary' or active or style == 'secondary' then
             ImGui.PopStyleColor(3)
         end
+
         if clicked then
             onClick()
         end
@@ -1581,7 +1841,19 @@ local function drawViewButtons(bankMode)
         end
     end
 
-    local rowY = ImGui.GetCursorPosY()
+    local function approxButtonWidth(label)
+        local style = ImGui.GetStyle()
+        return ImGui.CalcTextSize(label) + (style.FramePadding.x * 2) + 2
+    end
+
+    local contentRight = ImGui.GetWindowContentRegionMax()
+    local sellLabel = state.activeView == 'bank' and 'Sell All (Inv)' or 'Sell All'
+    local style = ImGui.GetStyle()
+    local dangerSpacing = style.ItemSpacing.x
+    local sellWidth = approxButtonWidth(sellLabel)
+    local dangerWidth = approxButtonWidth('Destroy') + dangerSpacing + approxButtonWidth('Drop')
+    local rightAnchorWidth = math.max(sellWidth, dangerWidth)
+    local rightAnchorX = contentRight - rightAnchorWidth
 
     drawViewButton('Inventory', state.activeView == 'inventory', function()
         state.activeView = 'inventory'
@@ -1596,34 +1868,46 @@ local function drawViewButtons(bankMode)
         echo('Switched to bank view.')
     end, 'Show live bank contents while bank is open, otherwise your last synced bank snapshot')
 
-    ImGui.SameLine()
+    if rightAnchorX < ImGui.GetCursorPosX() + 12 then
+        rightAnchorX = ImGui.GetCursorPosX() + 12
+    end
+
+    ImGui.SameLine(0, 8)
+    ImGui.SetCursorPosX(rightAnchorX)
+    ImGui.BeginGroup()
+    if rightAnchorWidth > sellWidth then
+        ImGui.Dummy(rightAnchorWidth - sellWidth, 0)
+        ImGui.SameLine(0, 0)
+    end
+    drawViewButton(sellLabel, false, function()
+        bulkSellByValue(1000)
+    end, 'Sell all inventory items worth 1pp or more. Skips items marked KEEP / Do Not Sell. Uses the current sort order.', 'primary')
+    ImGui.EndGroup()
+
+    ImGui.NewLine()
+
     drawViewButton('Deposit', false, function()
         performAutoDeposit()
-    end, 'Place the item on your cursor into the first matching stack or first empty bag slot in bag order for the current view. Bank deposits require the bank window to be open.')
+    end, 'Place the item on your cursor into the first matching stack or first empty bag slot in bag order for the current view. Bank deposits require the bank window to be open.', 'secondary')
 
-    ImGui.SameLine()
+    ImGui.SameLine(0, 6)
     drawViewButton('Help', false, function()
         state.showHelpDialog = true
         saveSettings()
         echo('Help dialog opened.')
-    end, 'Open the field manual.')
+    end, 'Open the field manual.', 'secondary')
 
-    local windowWidth = ImGui.GetWindowWidth()
-    local rightMargin = 18
-    local destroyWidth = 58
-    local dropWidth = 42
-    local dividerWidth = 10
-    local gap = 6
-    local dangerX = windowWidth - rightMargin - destroyWidth - gap - dropWidth - gap - dividerWidth
+    -- Keep the sort dropdown grouped with the utility controls and aligned to the same row height.
+    ImGui.SameLine(0, 6)
+    drawTopSortButtons()
 
-    if dangerX < 520 then
-        dangerX = 520
+    local dangerX = contentRight - dangerWidth
+    if dangerX < ImGui.GetCursorPosX() + 12 then
+        dangerX = ImGui.GetCursorPosX() + 12
     end
 
-    ImGui.SetCursorPos(dangerX, rowY)
-    ImGui.TextDisabled('|')
-
-    ImGui.SameLine()
+    ImGui.SameLine(0, 8)
+    ImGui.SetCursorPosX(dangerX)
     drawDangerButton('Destroy', function()
         destroyCursorItem()
     end, 'Destroy the item currently on your cursor. This cannot be undone.')
@@ -1944,9 +2228,9 @@ local function drawMainWindow(entries, bankMode)
         ImGui.SameLine()
 
         drawViewButtons(bankMode)
+        ImGui.Dummy(0, 3)
         ImGui.Separator()
-        drawTopSortButtons()
-        ImGui.Separator()
+        ImGui.Dummy(0, 2)
 
         local cursorPresent = hasCursorItem()
         for i, entry in ipairs(entries) do
@@ -1981,6 +2265,11 @@ end
 
 local function processPendingSell()
     if not state.pendingSell then
+        if state.pendingSellQueue and #state.pendingSellQueue > 0 then
+            if os.clock() >= (state.pendingSellQueueReadyAt or 0) then
+                startNextQueuedSell()
+            end
+        end
         return
     end
 
@@ -1991,6 +2280,8 @@ local function processPendingSell()
     if not merchantWindowOpen() then
         echo('Merchant window closed before sell completed.')
         state.pendingSell = nil
+        state.pendingSellQueue = nil
+        state.pendingSellQueueReadyAt = 0
         return
     end
 
@@ -1999,6 +2290,13 @@ local function processPendingSell()
     sellSelectedMerchantItem(qty)
     echo(string.format('Sent merchant sell for %s x%d.', (state.pendingSell.itemName or 'item'), qty))
     state.pendingSell = nil
+
+    if state.pendingSellQueue and #state.pendingSellQueue > 0 then
+        state.pendingSellQueueReadyAt = os.clock() + 0.35
+    else
+        state.pendingSellQueue = nil
+        state.pendingSellQueueReadyAt = 0
+    end
 end
 
 local function drawHelpDialog()
@@ -2010,12 +2308,18 @@ local function drawHelpDialog()
     ImGui.SetNextWindowSize(760, 520, ImGuiCond.FirstUseEver)
     local pushedColors, pushedVars = pushDiabloWindowStyle()
     local shouldDraw = ImGui.Begin('BEbags Help', true, bit32.bor(ImGuiWindowFlags.NoTitleBar, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse))
+    local requestClose = false
+
     if shouldDraw then
-        if drawDiabloHeader('BEbags Help', 'showHelpDialog', 'Help dialog closed.', 'Field manual') then
+        if drawDiabloHeader('BEbags Help', 'showHelpDialog', nil, 'Field manual') then
             ImGui.End()
             popDiabloWindowStyle(pushedColors, pushedVars)
+            state.showHelpDialog = false
+            saveSettings()
+            echo('Help dialog closed.')
             return
         end
+
         ImGui.BeginChild('##help_content', 0, 0, false)
 
         ImGui.TextWrapped('BEbags puts your bags and synced bank view into one cleaner window.')
@@ -2026,6 +2330,7 @@ local function drawHelpDialog()
         ImGui.BulletText('Inventory shows all carried bag items in one place.')
         ImGui.BulletText('Bank shows live contents when open, otherwise your last synced snapshot.')
         ImGui.BulletText('Opening the bank auto-syncs a fresh snapshot for that character.')
+        ImGui.BulletText('Items can be sorted by bag order, value, or name.')
 
         ImGui.Spacing()
         ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Controls')
@@ -2034,19 +2339,28 @@ local function drawHelpDialog()
         ImGui.BulletText('Double Left Click: inspect item.')
         ImGui.BulletText('Right Click: use a clicky item.')
         ImGui.BulletText('Ctrl + Right Click: sell full stack at a merchant.')
+        ImGui.BulletText('Alt + Right Click: toggle KEEP on an item.')
 
         ImGui.Spacing()
         ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Quick Actions')
         ImGui.Separator()
-        ImGui.BulletText('Deposit: places your cursor item into the first matching stack or empty slot.')
+        ImGui.BulletText('Sell All: sells items worth 1pp+ at a merchant.')
+        ImGui.BulletText('Sell All respects KEEP flags and your current sort order.')
+        ImGui.BulletText('Deposit: moves your cursor item into the first valid slot.')
         ImGui.BulletText('Destroy: permanently deletes the cursor item.')
         ImGui.BulletText('Drop: places the cursor item on the ground.')
-        ImGui.BulletText('Launcher Left Click: show or hide the main window.')
-        ImGui.BulletText('Launcher Right Click: open config.')
-        ImGui.BulletText('Launcher Middle Click: open quick actions.')
 
         ImGui.Spacing()
-        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Value Highlights')
+        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Sorting')
+        ImGui.Separator()
+        ImGui.BulletText('Bag Order')
+        ImGui.BulletText('High->Low')
+        ImGui.BulletText('Low->High')
+        ImGui.BulletText('Name A->Z')
+        ImGui.BulletText('Name Z->A')
+
+        ImGui.Spacing()
+        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Value Highlights / KEEP')
         ImGui.Separator()
         ImGui.TextColored(1.0, 0.85, 0.20, 1.0, 'Gold')
         ImGui.SameLine()
@@ -2054,25 +2368,33 @@ local function drawHelpDialog()
         ImGui.TextColored(0.60, 1.0, 0.60, 1.0, 'Green')
         ImGui.SameLine()
         ImGui.Text(' - item is worth 10pp or more')
+        ImGui.TextColored(0.82, 0.64, 1.0, 1.0, 'KEEP')
+        ImGui.SameLine()
+        ImGui.Text(' - item will not be sold and will not glow')
+        ImGui.TextWrapped('Removing KEEP restores normal value highlighting.')
 
         ImGui.Spacing()
         ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Tips')
         ImGui.Separator()
         ImGui.BulletText('Packed mode hides empty slots for a cleaner view.')
-        ImGui.BulletText('Manual Deposit Mode can temporarily reveal empty slots if needed.')
-        ImGui.BulletText('Cached bank view is browse-only when you are away from a banker.')
+        ImGui.BulletText('Deposit Mode can temporarily reveal empty slots if needed.')
+        ImGui.BulletText('Bank snapshot updates automatically when opened.')
         ImGui.BulletText('Most settings save automatically.')
 
         ImGui.Spacing()
         if ImGui.SmallButton('Close Help') then
-            state.showHelpDialog = false
-            saveSettings()
-            echo('Help dialog closed.')
+            requestClose = true
         end
         ImGui.EndChild()
     end
     ImGui.End()
     popDiabloWindowStyle(pushedColors, pushedVars)
+
+    if requestClose then
+        state.showHelpDialog = false
+        saveSettings()
+        echo('Help dialog closed.')
+    end
 end
 
 local function drawUI()
