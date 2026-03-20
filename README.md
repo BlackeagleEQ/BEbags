@@ -56,13 +56,17 @@ No more opening bags one by one. Everything is in one place.
 ## 🚀 Installation
 
 1. Download this repository or the latest release
-2. Place `BEbags.lua` into your MacroQuest `lua` folder:
+2. Place `BEbags folder` into your MacroQuest `lua` folder:
 
 ```
-MacroQuest/lua/BEbags.lua
+MacroQuest/lua/
 ```
 
-3. In game, run:
+3. Rename `Bebags-<version>` folder to `BEbags` if necessary
+
+
+
+4. In game, run:
 
 ```
 /lua run BEbags
