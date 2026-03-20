@@ -7,6 +7,12 @@
   👉 <a href="https://github.com/BlackeagleEQ/BEbags/releases/latest">Download Latest Version</a> 👈
 </p>
 
+<p align="center">
+  <a href="https://github.com/BlackeagleEQ/BEbags/releases/latest">
+    <img src="https://img.shields.io/github/downloads/BlackeagleEQ/BEbags/total?style=for-the-badge"/>
+  </a>
+</p>
+
 # 👜 BEbags
 
 **BEbags** is a powerful inventory manager for **EQEmu Servers using MacroQuest / E3N** that combines all your bags into one clean, easy-to-use interface.
