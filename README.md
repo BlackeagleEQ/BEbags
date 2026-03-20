@@ -1,4 +1,5 @@
 ![BEbags Banner](./screenshots/banner.png)
+
 <p align="center">
   <strong>Download</strong>
 </p>
@@ -17,9 +18,72 @@
 
 **BEbags** is a powerful inventory manager for **EQEmu Servers using MacroQuest / E3N** that combines all your bags into one clean, easy-to-use interface.
 
-No more opening bags one by one. Everything is in one place.
+No more opening bags one by one — everything is in one place.
 
-## 🔄 Sorting System
+
+
+# ✨ Key Features
+
+* 📦 Combines all bags into a single window
+* 🏦 View your bank anywhere after syncing
+* ⚡ Quick actions: deposit, destroy, drop
+* 💰 Value-based item highlighting
+* 🖱️ Smart click interactions
+* 🎨 Multiple UI themes
+* ⚙️ Fully customizable layout & behavior
+
+
+
+# 🆕 New in v1.2.1
+
+## 📁 Config System Upgrade
+
+BEbags now stores all config and cache files in:
+
+```
+e3\config\BEbags\
+```
+
+### Benefits
+
+* Keeps your config folder clean
+* No startup lag
+* Automatically created when settings are saved
+
+> ⚠️ Existing users will generate new config files after updating.
+
+
+
+## 🎒 Bag Space Indicator (Launcher Overlay)
+
+A fully customizable indicator showing remaining bag space:
+
+* Toggle visibility on/off
+* Adjustable size (Small / Medium / Large)
+* Style options (Clean / Bold)
+* Outline options (Off / Light / Heavy)
+* Multiple positions (center + corners)
+* Fine-tune with X/Y offsets
+* Color thresholds based on % of free space
+
+
+
+## 🧠 UI & Help Improvements
+
+* Reworked **Field Manual (Help Menu)**:
+
+  * Collapsible sections
+  * Quick Tips for faster onboarding
+  * Cleaner layout
+
+* Improved config window:
+
+  * Better spacing and grouping
+  * Reduced clutter
+
+
+
+# 🔄 Sorting System
 
 Items can be sorted using the dropdown:
 
@@ -29,11 +93,11 @@ Items can be sorted using the dropdown:
 * Name A → Z
 * Name Z → A
 
-👉 **Sell All uses the current sort order**, allowing controlled selling.
+👉 **Sell All uses the current sort order**
 
 
 
-## 💰 Sell All System
+# 💰 Sell All System
 
 * Sells all items worth **≥ 1pp**
 * Works only when a merchant is open
@@ -43,30 +107,36 @@ Items can be sorted using the dropdown:
 
 
 
-## 🛡️ KEEP System
+# 🛡️ KEEP System
 
-* Toggle KEEP with:
+* Toggle KEEP:
+
   * **Alt + Right Click**
-* KEEP items:
-  * ❌ Are never sold
-  * ❌ Do NOT glow
-  * ✅ Are pushed to the end of sorts
+
+KEEP items:
+
+* ❌ Never sold
+* ❌ Do NOT glow
+* ✅ Pushed to end of sorts
 
 Removing KEEP restores normal behavior.
 
 
 
-* 📦 Combines all your bags into a single window
-* 🏦 Lets you view your bank anywhere after syncing
-* ⚡ Adds quick actions like deposit, destroy, and drop
-* 🎯 Highlights valuable items automatically
-* 🖱️ Improves item interaction with smart click behavior
-* 🎨 Includes multiple UI themes
-* ⚙️ Fully customizable layout and behavior
+## 💰 Value Highlight System
+
+BEbags automatically highlights items based on vendor value:
+
+- 🟡 **Gold** → ≥ 100pp (high value)  
+- 🟢 **Green** → ≥ 10pp (moderate value)  
+- ⚫ **Default** → Low value / vendor trash  
+- 🏷️ **KEEP** → Protected (no glow)
+
+👉 Use this with **Value sorting** to quickly identify what to sell.
 
 
 
-## 🖼️ Screenshots
+# 🖼️ Screenshots
 
 ### BEbags - Inventory Management
 
@@ -74,16 +144,17 @@ Removing KEEP restores normal behavior.
 
 
 
-## 🚀 Installation
+# 🚀 Installation
 
 1. Download this repository or the latest release
-2. Place `BEbags-version` folder into your MacroQuest `lua` folder:
+2. Place `BEbags-version` folder into:
 
 ```
 MacroQuest/lua/
 ```
-3. If needed, rename folder to just `BEbags`
-4. In game, run:
+
+3. Rename folder to `BEbags` if needed
+4. In game:
 
 ```
 /lua run BEbags
@@ -91,49 +162,33 @@ MacroQuest/lua/
 
 
 
-## 🎮 How It Works
+# 🎮 How It Works
 
-### 👜 Main Window
+## 👜 Main Window
 
-* Displays all items from your inventory in one place
+* Displays all inventory items in one place
 * Top bar includes:
 
-  * **Inventory / Bank / Deposit**
-  * **Help button (quick access to field manual)**
-  * **Destroy / Drop (danger actions on the right)**
-
-
-
-## 💰 Value Highlight System
-
-BEbags automatically highlights items based on their vendor value:
-
-| Color     | Meaning                     |
-|  |  |
-| 🟡 Gold   | **≥ 100pp** (high value)    |
-| 🟢 Green  | **≥ 10pp** (moderate value) |
-| ⚫ Default | Low value / vendor trash    |
-| 🏷️ KEEP  | Protected (no glow)        |    |
-
-👉 Use this with **Value sorting** to quickly identify what to sell or keep.
+  * Inventory / Bank / Deposit
+  * Help button
+  * Destroy / Drop (right side)
 
 
 
 ## 🖱️ Mouse Controls
 
-| Action              | Result                              |
-| - | -- |
-| Left Click          | Pick up / move item                 |
-| Double Left Click   | Inspect item                        |
-| Right Click         | Use item                            |
-| Ctrl + Right Click  | Sell full stack (merchant required) |
-| Middle Click (icon) | Open quick actions                  |
+- **Left Click** → Pick up / move item  
+- **Double Left Click** → Inspect item  
+- **Right Click** → Use item  
+- **Ctrl + Right Click** → Sell full stack (merchant required)  
+- **Alt + Right Click** → Toggle KEEP  
+- **Middle Click** → Open quick actions  
 
 
 
-## ⚡ Quick Actions
+# ⚡ Quick Actions
 
-Accessed via middle-click on the launcher icon:
+Access via middle-click:
 
 * Toggle packed mode
 * Reset sorting
@@ -143,9 +198,7 @@ Accessed via middle-click on the launcher icon:
 
 
 
-## ⚠️ Safe vs Dangerous Actions
-
-BEbags separates actions to prevent mistakes:
+# ⚠️ Safe vs Dangerous Actions
 
 ### Safe Actions
 
@@ -154,36 +207,36 @@ BEbags separates actions to prevent mistakes:
 * Deposit
 * Help
 
-### Dangerous Actions (right side, red)
+### Dangerous Actions (right side)
 
 * Destroy → permanently deletes item
 * Drop → places item on the ground
 
-👉 These are intentionally separated to reduce misclick risk.
+👉 Separated to prevent misclicks.
 
 
 
-## ⚙️ Configuration
+# ⚙️ Configuration
 
-Open config by:
-
-* Right-clicking the launcher icon
-* Or using:
+Open config via:
 
 ```
 /BEbags config
 ```
 
-From here you can:
+Or right-click the launcher icon.
 
-* Adjust layout and sizing
-* Toggle UI elements
-* Enable/disable features
-* Choose your theme
+Customize:
+
+* Layout & sizing
+* UI elements
+* Feature toggles
+* Themes
+* Bag space indicator
 
 
 
-## 🎨 Theme Presets
+# 🎨 Theme Presets
 
 * Classic
 * Diablo
@@ -192,46 +245,30 @@ From here you can:
 
 
 
-## 🏦 Bank System
+# 🏦 Bank System
 
-* Open a banker once to sync your bank
-* After syncing, you can view your bank anywhere
+* Open banker once to sync
+* Access bank anywhere afterward
 
-### Behavior:
+### Behavior
 
 * Bank open → live view
-* Bank closed → cached snapshot (character-specific)
+* Bank closed → cached snapshot
 
 
 
-## 💡 Pro Tips
+# 💡 Pro Tips
 
-* 🔥 Use Packed Mode
-  Keeps your inventory clean and compact
-
-* 💰 Use Value Highlights
-  Green and gold items are your money makers
-
-* ⚡ Deposit is your best friend
-  Quickly stacks items or fills empty slots
-
-* 🧹 Clean junk instantly
-  Use Destroy / Drop for low-value items
-
-* 🏦 Bank anywhere
-  Sync once, access anytime
-
-* 🎯 Sort before selling
-  Value sorting makes selling much faster
-
-* 🎨 Try themes
-  Diablo = high contrast
-  Emerald = easy on the eyes
-  Frost = clean and minimal
+* 🔥 Use Packed Mode for a cleaner view
+* 💰 Sort by Value before selling
+* 🏷️ Mark important items as KEEP
+* ⚡ Deposit to quickly organize items
+* 🏦 Sync bank once for global access
+* 🎨 Try themes to match your style
 
 
 
-## 📜 Commands
+# 📜 Commands
 
 ```
 /BEbags           → Toggle main window
@@ -243,18 +280,18 @@ From here you can:
 
 
 
-## 👤 Author
+# 👤 Author
 
 BlackeagleEQ
 
 
 
-## ❤️ Credits
+# ❤️ Credits
 
 Built for the AscendantEQ community using MacroQuest Lua.
 
 
 
-## 🔥 Why BEbags?
+# 🔥 Why BEbags?
 
 Because once you use it, you’ll never go back to opening bags manually again.
