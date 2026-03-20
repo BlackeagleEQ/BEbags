@@ -108,12 +108,12 @@ MacroQuest/lua/
 
 BEbags automatically highlights items based on their vendor value:
 
-| Color     | Meaning                     |
-|  |  |
-| 🟡 Gold   | **≥ 100pp** (high value)    |
-| 🟢 Green  | **≥ 10pp** (moderate value) |
-| ⚫ Default | Low value / vendor trash    |
-| 🏷️ KEEP  | Protected (no glow)        |    |
+| Color      | Meaning                          |
+|------------|----------------------------------|
+| 🟡 Gold    | **≥ 100pp** (high value)         |
+| 🟢 Green   | **≥ 10pp** (moderate value)      |
+| ⚫ Default | Low value / vendor trash         |
+| 🏷️ KEEP   | Protected (no glow)              |
 
 👉 Use this with **Value sorting** to quickly identify what to sell or keep.
 
@@ -127,6 +127,7 @@ BEbags automatically highlights items based on their vendor value:
 | Double Left Click   | Inspect item                        |
 | Right Click         | Use item                            |
 | Ctrl + Right Click  | Sell full stack (merchant required) |
+| Alt + Right Click   | Mark item as "keep"                 |
 | Middle Click (icon) | Open quick actions                  |
 
 
