@@ -70,7 +70,7 @@ Removing KEEP restores normal behavior.
 
 ### BEbags - Inventory Management
 
-![BEBags](./screenshots/BEbags_menus.png)
+![BEBags](./screenshots/menus.png)
 
 
 
