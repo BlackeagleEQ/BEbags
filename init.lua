@@ -15,8 +15,10 @@ local EQ_ICON_OFFSET = 500
 local animItems = mq.FindTextureAnimation('A_DragItem')
 local animBox = mq.FindTextureAnimation('A_RecessedBox')
 
-local configPath = (mq.configDir or '.') .. '/BEbags_settings.lua'
-local bankCachePath = (mq.configDir or '.') .. '/BEbags_bank_cache.lua'
+local baseConfigDir = (mq.configDir or '.')
+local bebagsConfigDir = baseConfigDir .. '/BEbags'
+local configPath = bebagsConfigDir .. '/BEbags_settings.lua'
+local bankCachePath = bebagsConfigDir .. '/BEbags_bank_cache.lua'
 
 local state = {
     running = true,
@@ -63,13 +65,53 @@ local state = {
     diabloTheme = true,
     themePreset = 'Diablo',
     doNotSellItems = {},
+    mainWindowHotkey = '',
+    capturingHotkey = false,
+    lowBagSpaceGreenPercent = 25,
+    lowBagSpaceYellowPercent = 15,
+    lowBagSpaceRedPercent = 8,
+    showBagSpaceOverlay = true,
+    bagSpaceOverlaySize = 'Medium',
+    bagSpaceOverlayStyle = 'Bold',
+    bagSpaceOverlayPosition = 'Center',
+    bagSpaceOverlayOutline = 'Heavy',
+    bagSpaceOverlayOffsetX = 0,
+    bagSpaceOverlayOffsetY = 0,
 }
+
+local mainWindowHotkeyInput = ''
+local lowBagSpaceGreenPercentInput = ''
+local lowBagSpaceYellowPercentInput = ''
+local lowBagSpaceRedPercentInput = ''
 
 local headerFont = nil
 local headerFontLoaded = false
 
 local buildInventoryEntries
 local sortEntries
+local tryLoadHeaderFont
+
+
+local function clampPercent(v)
+    return math.max(0, math.min(100, math.floor(tonumber(v) or 0)))
+end
+
+local function normalizeLowBagSpaceThresholds()
+    local green = clampPercent(state.lowBagSpaceGreenPercent or 25)
+    local yellow = clampPercent(state.lowBagSpaceYellowPercent or 15)
+    local red = clampPercent(state.lowBagSpaceRedPercent or 8)
+
+    if yellow > green then yellow = green end
+    if red > yellow then red = yellow end
+
+    state.lowBagSpaceGreenPercent = green
+    state.lowBagSpaceYellowPercent = yellow
+    state.lowBagSpaceRedPercent = red
+
+    lowBagSpaceGreenPercentInput = tostring(green)
+    lowBagSpaceYellowPercentInput = tostring(yellow)
+    lowBagSpaceRedPercentInput = tostring(red)
+end
 
 
 local function echo(msg)
@@ -114,20 +156,27 @@ local function saveSettings()
         'showConfigWindow', 'autoResizeMain', 'mainNoScrollbar',
         'mainNoTitleBar', 'showMainValueBar', 'showMainWindow', 'showLauncher',
         'showHelpDialog', 'widthFudge', 'heightFudge', 'activeView',
-        'showBankSyncButton', 'showBankStatusText', 'depositMode', 'leftClickDelay', 'diabloTheme', 'themePreset', 'doNotSellItems',
+        'showBankSyncButton', 'showBankStatusText', 'depositMode', 'leftClickDelay',
+        'diabloTheme', 'themePreset', 'doNotSellItems', 'mainWindowHotkey',
+        'lowBagSpaceGreenPercent', 'lowBagSpaceYellowPercent', 'lowBagSpaceRedPercent',
+        'showSellAllButton', 'showBagSpaceOverlay', 'bagSpaceOverlaySize',
+        'bagSpaceOverlayStyle', 'bagSpaceOverlayPosition', 'bagSpaceOverlayOutline',
+        'bagSpaceOverlayOffsetX', 'bagSpaceOverlayOffsetY',
     }
 
-    local f, err = io.open(configPath, 'w')
-    if not f then
+    local data = {}
+    for _, key in ipairs(keys) do
+        data[key] = state[key]
+    end
+
+    local ok, err = pcall(function()
+        mq.pickle(configPath, data)
+    end)
+
+    if not ok then
         echo('Failed to save settings: ' .. tostring(err))
         return false
     end
-    f:write('return {\n')
-    for _, key in ipairs(keys) do
-        f:write(string.format('  %s = %s,\n', key, serializeValue(state[key], '  ')))
-    end
-    f:write('}\n')
-    f:close()
     return true
 end
 
@@ -161,19 +210,32 @@ local function loadSettings()
     state.diabloTheme = state.themePreset ~= 'Classic'
     state.showBankSyncButton = false
     state.showBankStatusText = false
+    state.mainWindowHotkey = tostring(state.mainWindowHotkey or '')
+    state.capturingHotkey = false
+    state.showSellAllButton = state.showSellAllButton ~= false
+    if state.showBagSpaceOverlay == nil then
+        state.showBagSpaceOverlay = false
+    end
+    state.bagSpaceOverlaySize = tostring(state.bagSpaceOverlaySize or 'Medium')
+    state.bagSpaceOverlayStyle = tostring(state.bagSpaceOverlayStyle or 'Bold')
+    state.bagSpaceOverlayPosition = tostring(state.bagSpaceOverlayPosition or 'Center')
+    state.bagSpaceOverlayOutline = tostring(state.bagSpaceOverlayOutline or 'Heavy')
+    state.bagSpaceOverlayOffsetX = math.max(-20, math.min(20, math.floor(tonumber(state.bagSpaceOverlayOffsetX) or 0)))
+    state.bagSpaceOverlayOffsetY = math.max(-20, math.min(20, math.floor(tonumber(state.bagSpaceOverlayOffsetY) or 0)))
+    mainWindowHotkeyInput = state.mainWindowHotkey
+    normalizeLowBagSpaceThresholds()
     return true
 end
 
 local function saveBankCache()
-    local f, err = io.open(bankCachePath, 'w')
-    if not f then
+    local ok, err = pcall(function()
+        mq.pickle(bankCachePath, state.bankCache)
+    end)
+
+    if not ok then
         echo('Failed to save bank cache: ' .. tostring(err))
         return false
     end
-    f:write('return ')
-    f:write(serializeValue(state.bankCache, ''))
-    f:write('\n')
-    f:close()
     return true
 end
 
@@ -213,8 +275,175 @@ local function loadBankCache()
         end
     end
 
+
     state.bankCache = data
     return true
+end
+
+local function normalizeHotkeyCombo(raw)
+    local s = tostring(raw or ''):lower()
+    s = s:gsub('%s+', '')
+    s = s:gsub('%-', '+')
+    s = s:gsub('control%+', 'ctrl+')
+    s = s:gsub('option%+', 'alt+')
+    s = s:gsub('command%+', 'ctrl+')
+    s = s:gsub('^%++', '')
+    s = s:gsub('%++$', '')
+    if s == '' then return '' end
+
+    local seen = {}
+    local parts = {}
+    local key = nil
+    for token in s:gmatch('[^+]+') do
+        if token == 'ctrl' or token == 'shift' or token == 'alt' then
+            if not seen[token] then
+                seen[token] = true
+                parts[#parts + 1] = token
+            end
+        elseif token ~= '' then
+            key = token
+        end
+    end
+
+    if not key or key == '' then
+        return ''
+    end
+
+    local ordered = {}
+    if seen.ctrl then ordered[#ordered + 1] = 'ctrl' end
+    if seen.shift then ordered[#ordered + 1] = 'shift' end
+    if seen.alt then ordered[#ordered + 1] = 'alt' end
+    ordered[#ordered + 1] = key
+    return table.concat(ordered, '+')
+end
+
+
+local function formatHotkeyLabel(combo)
+    local s = normalizeHotkeyCombo(combo)
+    if s == '' then return 'None' end
+    local pretty = {}
+    for token in s:gmatch('[^+]+') do
+        if token == 'ctrl' then
+            pretty[#pretty + 1] = 'Ctrl'
+        elseif token == 'shift' then
+            pretty[#pretty + 1] = 'Shift'
+        elseif token == 'alt' then
+            pretty[#pretty + 1] = 'Alt'
+        elseif token:match('^f%d+$') then
+            pretty[#pretty + 1] = token:upper()
+        elseif #token == 1 then
+            pretty[#pretty + 1] = token:upper()
+        else
+            pretty[#pretty + 1] = token:gsub('^%l', string.upper)
+        end
+    end
+    return table.concat(pretty, '+')
+end
+
+local function safeIsKeyDown(key)
+    return safeCall(function() return ImGui.IsKeyDown(key) end, false) or false
+end
+
+local function safeIsKeyPressed(key)
+    return safeCall(function() return ImGui.IsKeyPressed(key) end, false)
+        or safeCall(function() return ImGui.IsKeyPressed(key, false) end, false)
+        or false
+end
+
+local function getCapturedHotkeyCombo()
+    local ctrlDown = safeIsKeyDown(ImGuiKey.LeftCtrl) or safeIsKeyDown(ImGuiKey.RightCtrl)
+    local shiftDown = safeIsKeyDown(ImGuiKey.LeftShift) or safeIsKeyDown(ImGuiKey.RightShift)
+    local altDown = safeIsKeyDown(ImGuiKey.LeftAlt) or safeIsKeyDown(ImGuiKey.RightAlt)
+
+    if safeIsKeyPressed(ImGuiKey.Escape) then
+        return '__cancel__'
+    end
+
+    local captureKeys = {
+        { ImGuiKey.Tab, 'tab' },
+        { ImGuiKey.Space, 'space' },
+        { ImGuiKey.Insert, 'insert' },
+        { ImGuiKey.Delete, 'delete' },
+        { ImGuiKey.Home, 'home' },
+        { ImGuiKey.End, 'end' },
+        { ImGuiKey.PageUp, 'pageup' },
+        { ImGuiKey.PageDown, 'pagedown' },
+        { ImGuiKey.UpArrow, 'up' },
+        { ImGuiKey.DownArrow, 'down' },
+        { ImGuiKey.LeftArrow, 'left' },
+        { ImGuiKey.RightArrow, 'right' },
+    }
+
+    for i = 1, 12 do
+        local keyEnum = ImGuiKey['F' .. tostring(i)]
+        if keyEnum then
+            captureKeys[#captureKeys + 1] = { keyEnum, 'f' .. tostring(i) }
+        end
+    end
+
+    for c = string.byte('A'), string.byte('Z') do
+        local name = string.char(c)
+        local keyEnum = ImGuiKey[name]
+        if keyEnum then
+            captureKeys[#captureKeys + 1] = { keyEnum, name:lower() }
+        end
+    end
+
+    for i = 0, 9 do
+        local keyName = tostring(i)
+        local keyEnum = ImGuiKey[keyName]
+        if keyEnum then
+            captureKeys[#captureKeys + 1] = { keyEnum, keyName }
+        end
+    end
+
+    for _, entry in ipairs(captureKeys) do
+        if safeIsKeyPressed(entry[1]) then
+            local keyName = entry[2]
+            if keyName == 'delete' and not ctrlDown and not shiftDown and not altDown then
+                return '__clear__'
+            end
+
+            local parts = {}
+            if ctrlDown then parts[#parts + 1] = 'ctrl' end
+            if shiftDown then parts[#parts + 1] = 'shift' end
+            if altDown then parts[#parts + 1] = 'alt' end
+            parts[#parts + 1] = keyName
+            return table.concat(parts, '+')
+        end
+    end
+
+    return nil
+end
+
+local function applyMainWindowHotkey(newCombo, quiet)
+    local bindName = 'bebagsmain'
+    local normalized = normalizeHotkeyCombo(newCombo)
+
+    mq.cmdf('/bind %s clear', bindName)
+    mq.cmdf('/bind ~%s clear', bindName)
+    mq.cmdf('/custombind delete %s', bindName)
+
+    state.mainWindowHotkey = normalized
+    mainWindowHotkeyInput = normalized
+
+    if normalized ~= '' then
+        mq.cmdf('/custombind add %s', bindName)
+        mq.cmdf('/custombind set %s /BEbags toggle', bindName)
+        mq.cmdf('/bind %s %s', bindName, normalized)
+    end
+
+    saveSettings()
+
+    if not quiet then
+        if normalized ~= '' then
+            echo('Main window hotkey set to ' .. normalized .. '.')
+        else
+            echo('Main window hotkey cleared.')
+        end
+    end
+
+    return normalized ~= ''
 end
 
 local function resetSettings()
@@ -246,6 +475,9 @@ local function resetSettings()
     state.diabloTheme = true
     state.themePreset = 'Diablo'
     state.doNotSellItems = {}
+    state.mainWindowHotkey = ''
+    state.capturingHotkey = false
+    mainWindowHotkeyInput = ''
     saveSettings()
     echo('Settings reset to defaults.')
 end
@@ -948,6 +1180,23 @@ local function getSlotUsage(bankMode)
     return used, total
 end
 
+local function getInventorySlotUsage()
+    local used = 0
+    local total = 0
+    for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
+        local slotCount = getBagSlotCount(bagSlot)
+        if slotCount > 0 then
+            total = total + slotCount
+            for subslot = 1, slotCount do
+                if getBagItem(bagSlot, subslot) ~= nil then
+                    used = used + 1
+                end
+            end
+        end
+    end
+    return used, total
+end
+
 local function getViewLabel()
     if state.activeView == 'bank' then
         return 'Bank'
@@ -1503,139 +1752,381 @@ local function drawConfigWindow(entries, bankMode)
         ImGui.Text('BEbags Configuration')
         ImGui.Separator()
 
-        ImGui.Text('Current View: ' .. getViewLabel())
         local keepCount = 0
         for _ in pairs(state.doNotSellItems or {}) do keepCount = keepCount + 1 end
+
+        ImGui.Text('Current View: ' .. getViewLabel())
+        ImGui.SameLine(0, 16)
         ImGui.Text('Do Not Sell Flags: ' .. tostring(keepCount))
         if state.activeView == 'bank' and state.showBankStatusText then
             ImGui.TextWrapped(getBankStatusText(bankMode))
         end
 
-        ImGui.Text('Mode')
-        if ImGui.SmallButton('Packed') then doAction('Mode set to packed.', function() state.mode = 'packed' end) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Full') then doAction('Mode set to full.', function() state.mode = 'full' end) end
-        ImGui.SameLine()
-        ImGui.Text('Current: ' .. state.mode)
+        ImGui.Spacing()
 
-        ImGui.Text('Layout')
-        if ImGui.SmallButton('Cols -1') then doAction('Columns decreased.', function() state.columns = math.max(4, state.columns - 1) end) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Cols +1') then doAction('Columns increased.', function() state.columns = math.min(24, state.columns + 1) end) end
-        ImGui.SameLine()
-        ImGui.Text('Columns: ' .. tostring(state.columns))
-
-        if ImGui.SmallButton('Size -2') then doAction('Slot size decreased.', function() state.slotSize = math.max(24, state.slotSize - 2) end) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Size +2') then doAction('Slot size increased.', function() state.slotSize = math.min(56, state.slotSize + 2) end) end
-        ImGui.SameLine()
-        ImGui.Text('Slot Size: ' .. tostring(state.slotSize))
-
-        if ImGui.SmallButton('Width -8') then doAction('Width fudge decreased.', function() state.widthFudge = math.max(0, state.widthFudge - 8) end) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Width +8') then doAction('Width fudge increased.', function() state.widthFudge = math.min(200, state.widthFudge + 8) end) end
-        ImGui.SameLine()
-        ImGui.Text('Width Fudge: ' .. tostring(state.widthFudge))
-
-        if ImGui.SmallButton('Height -4') then doAction('Height fudge decreased.', function() state.heightFudge = math.max(0, state.heightFudge - 4) end) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Height +4') then doAction('Height fudge increased.', function() state.heightFudge = math.min(120, state.heightFudge + 4) end) end
-        ImGui.SameLine()
-        ImGui.Text('Height Fudge: ' .. tostring(state.heightFudge))
-
-        if ImGui.SmallButton(state.autoResizeMain and 'Auto Resize: ON' or 'Auto Resize: OFF') then
-            doAction('Toggled auto resize.', function() state.autoResizeMain = not state.autoResizeMain end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.mainNoScrollbar and 'Scrollbar: OFF' or 'Scrollbar: ON') then
-            doAction('Toggled main scrollbar.', function() state.mainNoScrollbar = not state.mainNoScrollbar end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.mainNoTitleBar and 'Native Title: OFF' or 'Native Title: ON') then
-            doAction('Toggled native title bar preference.', function() state.mainNoTitleBar = not state.mainNoTitleBar end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.showMainValueBar and 'Value Bar: ON' or 'Value Bar: OFF') then
-            doAction('Toggled main value bar.', function() state.showMainValueBar = not state.showMainValueBar end)
-        end
-
-        ImGui.Text('Visibility / Behavior')
-        if ImGui.SmallButton(state.hideEmptyInFull and 'Full Empty: Hidden' or 'Full Empty: Shown') then
-            doAction('Toggled full empty visibility.', function() state.hideEmptyInFull = not state.hideEmptyInFull end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.showBagInfo and 'Bag Info: ON' or 'Bag Info: OFF') then
-            doAction('Toggled bag info.', function() state.showBagInfo = not state.showBagInfo end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.showItemBackground and 'Slot BG: ON' or 'Slot BG: OFF') then
-            doAction('Toggled slot background.', function() state.showItemBackground = not state.showItemBackground end)
-        end
-
-        if ImGui.SmallButton(state.showValueGlow and 'Value Glow: ON' or 'Value Glow: OFF') then
-            doAction('Toggled value glow.', function() state.showValueGlow = not state.showValueGlow end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.rightClickEnabled and 'Right Click: ON' or 'Right Click: OFF') then
-            doAction('Toggled right click.', function() state.rightClickEnabled = not state.rightClickEnabled end)
-        end
-
-        ImGui.Text('Theme Presets')
-        local themeOrder = {'Classic', 'Diablo', 'Emerald', 'Frost'}
-        for i, themeName in ipairs(themeOrder) do
-            if i > 1 then
-                ImGui.SameLine()
+        if ImGui.CollapsingHeader('General', ImGuiTreeNodeFlags.DefaultOpen) then
+            ImGui.Text('Hotkey')
+            if state.capturingHotkey then
+                local capturedCombo = getCapturedHotkeyCombo()
+                if capturedCombo == '__cancel__' then
+                    state.capturingHotkey = false
+                    echo('Hotkey capture canceled.')
+                elseif capturedCombo == '__clear__' then
+                    state.capturingHotkey = false
+                    applyMainWindowHotkey('', false)
+                elseif capturedCombo and capturedCombo ~= '' then
+                    state.capturingHotkey = false
+                    applyMainWindowHotkey(capturedCombo, false)
+                end
             end
-            local label = (state.themePreset == themeName) and ('[' .. themeName .. ']') or themeName
-            if ImGui.SmallButton(label) then
-                doAction('Theme set to ' .. themeName .. '.', function()
-                    state.themePreset = themeName
-                    state.diabloTheme = themeName ~= 'Classic'
+
+            local hotkeyButtonLabel = state.capturingHotkey and 'Press a key combo...' or 'Set Hotkey'
+            if ImGui.SmallButton(hotkeyButtonLabel) then
+                state.capturingHotkey = true
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Clear Hotkey') then
+                state.capturingHotkey = false
+                applyMainWindowHotkey('', false)
+            end
+            ImGui.TextDisabled('Current: ' .. formatHotkeyLabel(state.mainWindowHotkey))
+            if state.capturingHotkey then
+                ImGui.TextWrapped('Listening... Press your desired key combination now. Esc cancels. Delete clears.')
+            end
+
+            ImGui.Spacing()
+
+            local sellAllToggleLabel = state.showSellAllButton and '[X] Show Sell All Button' or '[ ] Show Sell All Button'
+            if ImGui.SmallButton(sellAllToggleLabel) then
+                local nextShowSellAll = not state.showSellAllButton
+                doAction(nextShowSellAll and 'Sell All button enabled.' or 'Sell All button hidden.', function()
+                    state.showSellAllButton = nextShowSellAll
+                end)
+            end
+
+            ImGui.Spacing()
+
+            local bagSpaceOverlayToggleLabel = state.showBagSpaceOverlay and '[X] Show Remaining Bag Space Number' or '[ ] Show Remaining Bag Space Number'
+            if ImGui.SmallButton(bagSpaceOverlayToggleLabel) then
+                local nextShowBagSpaceOverlay = not state.showBagSpaceOverlay
+                doAction(nextShowBagSpaceOverlay and 'Bag space overlay enabled.' or 'Bag space overlay hidden.', function()
+                    state.showBagSpaceOverlay = nextShowBagSpaceOverlay
                 end)
             end
         end
 
-        ImGui.Text('Views')
-        if ImGui.SmallButton(state.activeView == 'inventory' and 'Inventory: ON' or 'Inventory') then
-            doAction('Switched to inventory view.', function() state.activeView = 'inventory' end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.activeView == 'bank' and 'Bank: ON' or 'Bank') then
-            doAction('Switched to bank view.', function() state.activeView = 'bank' end)
-        end
-        ImGui.SameLine()
-        if ImGui.SmallButton(state.depositMode and 'Manual Deposit Mode: ON' or 'Manual Deposit Mode: OFF') then
-            setDepositMode(not state.depositMode)
-        end
-        if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('Manual fallback: shows empty slots even while you normally use Packed mode. It turns itself off after your cursor is empty.')
-        end
+        if ImGui.CollapsingHeader('Bag Space Alert') then
+            ImGui.TextWrapped('Color the launcher number by free bag space percentage. Set Green to 0 to disable the overlay.')
 
-        if ImGui.SmallButton(state.bankAutoSyncEnabled and 'Auto Sync: ON' or 'Auto Sync: OFF') then
-            doAction('Toggled bank auto sync.', function() state.bankAutoSyncEnabled = not state.bankAutoSyncEnabled end)
-        end
-        if state.showBankSyncButton then
-            if ImGui.SmallButton('Sync Bank Now') then
-                syncBankCache()
+            local currentGreenPercent = clampPercent(state.lowBagSpaceGreenPercent or 25)
+            local currentYellowPercent = clampPercent(state.lowBagSpaceYellowPercent or 15)
+            local currentRedPercent = clampPercent(state.lowBagSpaceRedPercent or 8)
+
+            ImGui.Text('Green %')
+            ImGui.SameLine()
+            ImGui.SetNextItemWidth(90)
+            local greenOk, greenChanged, greenValue = pcall(function()
+                return ImGui.InputInt('##GreenPercent', currentGreenPercent, 1, 5)
+            end)
+            if greenOk then
+                local nextGreen = currentGreenPercent
+                local didChange = false
+                if type(greenChanged) == 'boolean' then
+                    didChange = greenChanged
+                    if didChange then nextGreen = tonumber(greenValue) or currentGreenPercent end
+                elseif type(greenChanged) == 'number' then
+                    nextGreen = greenChanged
+                    didChange = nextGreen ~= currentGreenPercent
+                end
+                if didChange then
+                    doAction('Low bag space green threshold updated.', function()
+                        state.lowBagSpaceGreenPercent = clampPercent(nextGreen)
+                        normalizeLowBagSpaceThresholds()
+                    end)
+                end
+            end
+
+            ImGui.SameLine(0, 16)
+            ImGui.Text('Yellow %')
+            ImGui.SameLine()
+            ImGui.SetNextItemWidth(90)
+            local yellowOk, yellowChanged, yellowValue = pcall(function()
+                return ImGui.InputInt('##YellowPercent', currentYellowPercent, 1, 5)
+            end)
+            if yellowOk then
+                local nextYellow = currentYellowPercent
+                local didChange = false
+                if type(yellowChanged) == 'boolean' then
+                    didChange = yellowChanged
+                    if didChange then nextYellow = tonumber(yellowValue) or currentYellowPercent end
+                elseif type(yellowChanged) == 'number' then
+                    nextYellow = yellowChanged
+                    didChange = nextYellow ~= currentYellowPercent
+                end
+                if didChange then
+                    doAction('Low bag space yellow threshold updated.', function()
+                        state.lowBagSpaceYellowPercent = clampPercent(nextYellow)
+                        normalizeLowBagSpaceThresholds()
+                    end)
+                end
+            end
+
+            ImGui.SameLine(0, 16)
+            ImGui.Text('Red %')
+            ImGui.SameLine()
+            ImGui.SetNextItemWidth(90)
+            local redOk, redChanged, redValue = pcall(function()
+                return ImGui.InputInt('##RedPercent', currentRedPercent, 1, 5)
+            end)
+            if redOk then
+                local nextRed = currentRedPercent
+                local didChange = false
+                if type(redChanged) == 'boolean' then
+                    didChange = redChanged
+                    if didChange then nextRed = tonumber(redValue) or currentRedPercent end
+                elseif type(redChanged) == 'number' then
+                    nextRed = redChanged
+                    didChange = nextRed ~= currentRedPercent
+                end
+                if didChange then
+                    doAction('Low bag space red threshold updated.', function()
+                        state.lowBagSpaceRedPercent = clampPercent(nextRed)
+                        normalizeLowBagSpaceThresholds()
+                    end)
+                end
+            end
+
+            ImGui.TextDisabled('Green >= ' .. tostring(state.lowBagSpaceGreenPercent) .. '%   Yellow >= ' .. tostring(state.lowBagSpaceYellowPercent) .. '%   Red < ' .. tostring(state.lowBagSpaceRedPercent) .. '%')
+
+            ImGui.Spacing()
+            ImGui.Text('Overlay Look')
+
+            local overlaySizeOptions = {'Small', 'Medium', 'Large'}
+            for i, option in ipairs(overlaySizeOptions) do
+                if i > 1 then ImGui.SameLine() end
+                local label = (state.bagSpaceOverlaySize == option) and ('[' .. option .. ']') or option
+                if ImGui.SmallButton(label .. '##BagOverlaySize') then
+                    doAction('Bag space overlay size set to ' .. option .. '.', function()
+                        state.bagSpaceOverlaySize = option
+                    end)
+                end
+            end
+
+            ImGui.TextDisabled('Style changes the text fill. Outline changes the shadow around it.')
+            local overlayStyleOptions = {'Clean', 'Bold'}
+            for i, option in ipairs(overlayStyleOptions) do
+                if i > 1 then ImGui.SameLine() end
+                local label = (state.bagSpaceOverlayStyle == option) and ('[' .. option .. ']') or option
+                if ImGui.SmallButton(label .. '##BagOverlayStyle') then
+                    doAction('Bag space overlay style set to ' .. option .. '.', function()
+                        state.bagSpaceOverlayStyle = option
+                    end)
+                end
+            end
+
+            local overlayPositionOptions = {'Center', 'Top Right', 'Bottom Right', 'Top Left', 'Bottom Left'}
+            for i, option in ipairs(overlayPositionOptions) do
+                if i > 1 then ImGui.SameLine() end
+                local label = (state.bagSpaceOverlayPosition == option) and ('[' .. option .. ']') or option
+                if ImGui.SmallButton(label .. '##BagOverlayPosition') then
+                    doAction('Bag space overlay position set to ' .. option .. '.', function()
+                        state.bagSpaceOverlayPosition = option
+                    end)
+                end
+            end
+
+            local overlayOutlineOptions = {'Off', 'Light', 'Heavy'}
+            for i, option in ipairs(overlayOutlineOptions) do
+                if i > 1 then ImGui.SameLine() end
+                local label = (state.bagSpaceOverlayOutline == option) and ('[' .. option .. ']') or option
+                if ImGui.SmallButton(label .. '##BagOverlayOutline') then
+                    doAction('Bag space overlay outline set to ' .. option .. '.', function()
+                        state.bagSpaceOverlayOutline = option
+                    end)
+                end
+            end
+
+            ImGui.Text('Offset X')
+            ImGui.SameLine()
+            ImGui.SetNextItemWidth(80)
+            local offsetXOk, offsetXChanged, offsetXValue = pcall(function()
+                return ImGui.InputInt('##BagOverlayOffsetX', state.bagSpaceOverlayOffsetX or 0, 1, 5)
+            end)
+            if offsetXOk then
+                local nextOffsetX = state.bagSpaceOverlayOffsetX or 0
+                local didChange = false
+                if type(offsetXChanged) == 'boolean' then
+                    didChange = offsetXChanged
+                    if didChange then nextOffsetX = tonumber(offsetXValue) or nextOffsetX end
+                elseif type(offsetXChanged) == 'number' then
+                    nextOffsetX = offsetXChanged
+                    didChange = nextOffsetX ~= (state.bagSpaceOverlayOffsetX or 0)
+                end
+                if didChange then
+                    doAction('Bag space overlay X offset updated.', function()
+                        state.bagSpaceOverlayOffsetX = math.max(-20, math.min(20, math.floor(tonumber(nextOffsetX) or 0)))
+                    end)
+                end
+            end
+
+            ImGui.SameLine(0, 16)
+            ImGui.Text('Offset Y')
+            ImGui.SameLine()
+            ImGui.SetNextItemWidth(80)
+            local offsetYOk, offsetYChanged, offsetYValue = pcall(function()
+                return ImGui.InputInt('##BagOverlayOffsetY', state.bagSpaceOverlayOffsetY or 0, 1, 5)
+            end)
+            if offsetYOk then
+                local nextOffsetY = state.bagSpaceOverlayOffsetY or 0
+                local didChange = false
+                if type(offsetYChanged) == 'boolean' then
+                    didChange = offsetYChanged
+                    if didChange then nextOffsetY = tonumber(offsetYValue) or nextOffsetY end
+                elseif type(offsetYChanged) == 'number' then
+                    nextOffsetY = offsetYChanged
+                    didChange = nextOffsetY ~= (state.bagSpaceOverlayOffsetY or 0)
+                end
+                if didChange then
+                    doAction('Bag space overlay Y offset updated.', function()
+                        state.bagSpaceOverlayOffsetY = math.max(-20, math.min(20, math.floor(tonumber(nextOffsetY) or 0)))
+                    end)
+                end
             end
         end
 
-        ImGui.Text('Sort')
-        if ImGui.SmallButton('Bag Order') then doAction('Sort set to bag order.', function() state.sortMode = 'bag' end) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Value High->Low') then doAction('Sort set to value high to low.', function() state.sortMode = 'stack_value_desc' end) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Value Low->High') then doAction('Sort set to value low to high.', function() state.sortMode = 'stack_value_asc' end) end
-        if ImGui.SmallButton('Name A->Z') then doAction('Sort set to name A to Z.', function() state.sortMode = 'name_asc' end) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Name Z->A') then doAction('Sort set to name Z to A.', function() state.sortMode = 'name_desc' end) end
+        if ImGui.CollapsingHeader('Layout') then
+            ImGui.Text('Mode')
+            if ImGui.SmallButton('Packed') then doAction('Mode set to packed.', function() state.mode = 'packed' end) end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Full') then doAction('Mode set to full.', function() state.mode = 'full' end) end
+            ImGui.SameLine()
+            ImGui.TextDisabled('Current: ' .. state.mode)
 
-        ImGui.Separator()
-        if ImGui.SmallButton('Save Settings') then saveSettings(); echo('Settings saved.') end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Reset Defaults') then resetSettings(); echo('Settings reset.') end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Close Config') then state.showConfigWindow = false; saveSettings(); echo('Config closed.') end
+            ImGui.Text('Size')
+            if ImGui.SmallButton('Cols -1') then doAction('Columns decreased.', function() state.columns = math.max(4, state.columns - 1) end) end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Cols +1') then doAction('Columns increased.', function() state.columns = math.min(24, state.columns + 1) end) end
+            ImGui.SameLine()
+            ImGui.TextDisabled('Columns: ' .. tostring(state.columns))
+
+            if ImGui.SmallButton('Size -2') then doAction('Slot size decreased.', function() state.slotSize = math.max(24, state.slotSize - 2) end) end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Size +2') then doAction('Slot size increased.', function() state.slotSize = math.min(56, state.slotSize + 2) end) end
+            ImGui.SameLine()
+            ImGui.TextDisabled('Slot Size: ' .. tostring(state.slotSize))
+
+            if ImGui.SmallButton('Width -8') then doAction('Width fudge decreased.', function() state.widthFudge = math.max(0, state.widthFudge - 8) end) end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Width +8') then doAction('Width fudge increased.', function() state.widthFudge = math.min(200, state.widthFudge + 8) end) end
+            ImGui.SameLine()
+            ImGui.TextDisabled('Width Fudge: ' .. tostring(state.widthFudge))
+
+            if ImGui.SmallButton('Height -4') then doAction('Height fudge decreased.', function() state.heightFudge = math.max(0, state.heightFudge - 4) end) end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Height +4') then doAction('Height fudge increased.', function() state.heightFudge = math.min(120, state.heightFudge + 4) end) end
+            ImGui.SameLine()
+            ImGui.TextDisabled('Height Fudge: ' .. tostring(state.heightFudge))
+
+            if ImGui.SmallButton(state.autoResizeMain and 'Auto Resize: ON' or 'Auto Resize: OFF') then
+                doAction('Toggled auto resize.', function() state.autoResizeMain = not state.autoResizeMain end)
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.mainNoScrollbar and 'Scrollbar: OFF' or 'Scrollbar: ON') then
+                doAction('Toggled main scrollbar.', function() state.mainNoScrollbar = not state.mainNoScrollbar end)
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.mainNoTitleBar and 'Native Title: OFF' or 'Native Title: ON') then
+                doAction('Toggled native title bar preference.', function() state.mainNoTitleBar = not state.mainNoTitleBar end)
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.showMainValueBar and 'Value Bar: ON' or 'Value Bar: OFF') then
+                doAction('Toggled main value bar.', function() state.showMainValueBar = not state.showMainValueBar end)
+            end
+        end
+
+        if ImGui.CollapsingHeader('Visuals') then
+            if ImGui.SmallButton(state.hideEmptyInFull and 'Full Empty: Hidden' or 'Full Empty: Shown') then
+                doAction('Toggled full empty visibility.', function() state.hideEmptyInFull = not state.hideEmptyInFull end)
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.showBagInfo and 'Bag Info: ON' or 'Bag Info: OFF') then
+                doAction('Toggled bag info.', function() state.showBagInfo = not state.showBagInfo end)
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.showItemBackground and 'Slot BG: ON' or 'Slot BG: OFF') then
+                doAction('Toggled slot background.', function() state.showItemBackground = not state.showItemBackground end)
+            end
+
+            if ImGui.SmallButton(state.showValueGlow and 'Value Glow: ON' or 'Value Glow: OFF') then
+                doAction('Toggled value glow.', function() state.showValueGlow = not state.showValueGlow end)
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.rightClickEnabled and 'Right Click: ON' or 'Right Click: OFF') then
+                doAction('Toggled right click.', function() state.rightClickEnabled = not state.rightClickEnabled end)
+            end
+
+            ImGui.Text('Theme')
+            local themeOrder = {'Classic', 'Diablo', 'Emerald', 'Frost'}
+            for i, themeName in ipairs(themeOrder) do
+                if i > 1 then
+                    ImGui.SameLine()
+                end
+                local label = (state.themePreset == themeName) and ('[' .. themeName .. ']') or themeName
+                if ImGui.SmallButton(label) then
+                    doAction('Theme set to ' .. themeName .. '.', function()
+                        state.themePreset = themeName
+                        state.diabloTheme = themeName ~= 'Classic'
+                    end)
+                end
+            end
+        end
+
+        if ImGui.CollapsingHeader('Behavior') then
+            ImGui.Text('Views')
+            if ImGui.SmallButton(state.activeView == 'inventory' and 'Inventory: ON' or 'Inventory') then
+                doAction('Switched to inventory view.', function() state.activeView = 'inventory' end)
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.activeView == 'bank' and 'Bank: ON' or 'Bank') then
+                doAction('Switched to bank view.', function() state.activeView = 'bank' end)
+            end
+            ImGui.SameLine()
+            if ImGui.SmallButton(state.depositMode and 'Manual Deposit Mode: ON' or 'Manual Deposit Mode: OFF') then
+                setDepositMode(not state.depositMode)
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Manual fallback: shows empty slots even while you normally use Packed mode. It turns itself off after your cursor is empty.')
+            end
+
+            if ImGui.SmallButton(state.bankAutoSyncEnabled and 'Auto Sync: ON' or 'Auto Sync: OFF') then
+                doAction('Toggled bank auto sync.', function() state.bankAutoSyncEnabled = not state.bankAutoSyncEnabled end)
+            end
+            if state.showBankSyncButton then
+                ImGui.SameLine()
+                if ImGui.SmallButton('Sync Bank Now') then
+                    syncBankCache()
+                end
+            end
+        end
+
+        if ImGui.CollapsingHeader('Sorting') then
+            if ImGui.SmallButton('Bag Order') then doAction('Sort set to bag order.', function() state.sortMode = 'bag' end) end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Value High->Low') then doAction('Sort set to value high to low.', function() state.sortMode = 'stack_value_desc' end) end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Value Low->High') then doAction('Sort set to value low to high.', function() state.sortMode = 'stack_value_asc' end) end
+            if ImGui.SmallButton('Name A->Z') then doAction('Sort set to name A to Z.', function() state.sortMode = 'name_asc' end) end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Name Z->A') then doAction('Sort set to name Z to A.', function() state.sortMode = 'name_desc' end) end
+        end
+
+        if ImGui.CollapsingHeader('Advanced') then
+            if ImGui.SmallButton('Save Settings') then saveSettings(); echo('Settings saved.') end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Reset Defaults') then resetSettings(); echo('Settings reset.') end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Close Config') then state.showConfigWindow = false; saveSettings(); echo('Config closed.') end
+        end
 
         ImGui.EndChild()
 
@@ -1680,9 +2171,16 @@ local function drawLauncher()
         local buttonSize = 40
         local clickedLeft = false
 
-        if launcherIconID > 0 and animItems then
-            local startX, startY = ImGui.GetCursorPos()
+        local startX, startY = ImGui.GetCursorPos()
+        local greenThresholdPercent = clampPercent(state.lowBagSpaceGreenPercent or 25)
+        local yellowThresholdPercent = clampPercent(state.lowBagSpaceYellowPercent or 15)
+        local redThresholdPercent = clampPercent(state.lowBagSpaceRedPercent or 8)
+        local usedInventorySlots, totalInventorySlots = getInventorySlotUsage()
+        local freeInventorySlots = math.max(0, totalInventorySlots - usedInventorySlots)
+        local freeInventoryPercent = totalInventorySlots > 0 and ((freeInventorySlots / totalInventorySlots) * 100.0) or 100.0
+        local showLowSpaceOverlay = state.showBagSpaceOverlay and greenThresholdPercent > 0 and totalInventorySlots > 0
 
+        if launcherIconID > 0 and animItems then
             if animBox then
                 ImGui.DrawTextureAnimation(animBox, buttonSize, buttonSize)
                 ImGui.SetCursorPos(startX, startY)
@@ -1691,7 +2189,100 @@ local function drawLauncher()
             animItems:SetTextureCell(launcherIconID - EQ_ICON_OFFSET)
             ImGui.DrawTextureAnimation(animItems, buttonSize, buttonSize)
             ImGui.SetCursorPos(startX, startY)
+        end
 
+        if showLowSpaceOverlay then
+            tryLoadHeaderFont()
+            local overlayText = tostring(freeInventorySlots)
+            local overlayR, overlayG, overlayB = 1.00, 0.18, 0.18
+            if freeInventoryPercent >= greenThresholdPercent then
+                overlayR, overlayG, overlayB = 0.20, 0.90, 0.20
+            elseif freeInventoryPercent >= yellowThresholdPercent then
+                overlayR, overlayG, overlayB = 1.00, 0.82, 0.18
+            elseif freeInventoryPercent >= redThresholdPercent then
+                overlayR, overlayG, overlayB = 1.00, 0.18, 0.18
+            end
+
+            local overlaySize = tostring(state.bagSpaceOverlaySize or 'Medium')
+            local overlayStyle = tostring(state.bagSpaceOverlayStyle or 'Bold')
+            local overlayPosition = tostring(state.bagSpaceOverlayPosition or 'Center')
+            local overlayOutline = tostring(state.bagSpaceOverlayOutline or 'Heavy')
+            local overlayOffsetX = math.max(-20, math.min(20, math.floor(tonumber(state.bagSpaceOverlayOffsetX) or 0)))
+            local overlayOffsetY = math.max(-20, math.min(20, math.floor(tonumber(state.bagSpaceOverlayOffsetY) or 0)))
+
+            local overlayScale = 1.0
+            if overlaySize == 'Small' then
+                overlayScale = 0.85
+            elseif overlaySize == 'Large' then
+                overlayScale = 1.20
+            end
+
+            if headerFont then ImGui.PushFont(headerFont) end
+            local textWidth = ImGui.CalcTextSize(overlayText) * overlayScale
+            local overlayX = startX + math.floor((buttonSize - textWidth) * 0.5)
+            local overlayY = startY + math.floor((buttonSize - 18) * 0.5) - 2
+
+            if overlayPosition == 'Top Right' then
+                overlayX = startX + math.max(1, buttonSize - textWidth - 3)
+                overlayY = startY + 2
+            elseif overlayPosition == 'Bottom Right' then
+                overlayX = startX + math.max(1, buttonSize - textWidth - 3)
+                overlayY = startY + buttonSize - 18
+            elseif overlayPosition == 'Top Left' then
+                overlayX = startX + 2
+                overlayY = startY + 2
+            elseif overlayPosition == 'Bottom Left' then
+                overlayX = startX + 2
+                overlayY = startY + buttonSize - 18
+            end
+
+            overlayX = overlayX + overlayOffsetX
+            overlayY = overlayY + overlayOffsetY
+
+            if overlayScale ~= 1.0 and ImGui.SetWindowFontScale then
+                ImGui.SetWindowFontScale(overlayScale)
+            end
+
+            if overlayOutline == 'Heavy' then
+                ImGui.SetCursorPos(overlayX - 1, overlayY)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.92, overlayText)
+                ImGui.SetCursorPos(overlayX + 1, overlayY)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.92, overlayText)
+                ImGui.SetCursorPos(overlayX, overlayY - 1)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.92, overlayText)
+                ImGui.SetCursorPos(overlayX, overlayY + 1)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.92, overlayText)
+                ImGui.SetCursorPos(overlayX - 1, overlayY - 1)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.80, overlayText)
+                ImGui.SetCursorPos(overlayX + 1, overlayY - 1)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.80, overlayText)
+                ImGui.SetCursorPos(overlayX - 1, overlayY + 1)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.80, overlayText)
+                ImGui.SetCursorPos(overlayX + 1, overlayY + 1)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.80, overlayText)
+            elseif overlayOutline == 'Light' then
+                ImGui.SetCursorPos(overlayX + 1, overlayY + 1)
+                ImGui.TextColored(0.00, 0.00, 0.00, 0.75, overlayText)
+            end
+
+            if overlayStyle == 'Bold' then
+                ImGui.SetCursorPos(overlayX - 0.6, overlayY)
+                ImGui.TextColored(overlayR, overlayG, overlayB, 0.95, overlayText)
+                ImGui.SetCursorPos(overlayX + 0.6, overlayY)
+                ImGui.TextColored(overlayR, overlayG, overlayB, 0.95, overlayText)
+            end
+
+            ImGui.SetCursorPos(overlayX, overlayY)
+            ImGui.TextColored(overlayR, overlayG, overlayB, 1.00, overlayText)
+
+            if overlayScale ~= 1.0 and ImGui.SetWindowFontScale then
+                ImGui.SetWindowFontScale(1.0)
+            end
+            if headerFont then ImGui.PopFont() end
+            ImGui.SetCursorPos(startX, startY)
+        end
+
+        if launcherIconID > 0 and animItems then
             ImGui.PushStyleColor(ImGuiCol.Button, 0.00, 0.00, 0.00, 0.05)
             ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.90, 0.82, 0.28, 0.18)
             ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.95, 0.86, 0.32, 0.24)
@@ -1872,17 +2463,19 @@ local function drawViewButtons(bankMode)
         rightAnchorX = ImGui.GetCursorPosX() + 12
     end
 
-    ImGui.SameLine(0, 8)
-    ImGui.SetCursorPosX(rightAnchorX)
-    ImGui.BeginGroup()
-    if rightAnchorWidth > sellWidth then
-        ImGui.Dummy(rightAnchorWidth - sellWidth, 0)
-        ImGui.SameLine(0, 0)
+    if state.showSellAllButton then
+        ImGui.SameLine(0, 8)
+        ImGui.SetCursorPosX(rightAnchorX)
+        ImGui.BeginGroup()
+        if rightAnchorWidth > sellWidth then
+            ImGui.Dummy(rightAnchorWidth - sellWidth, 0)
+            ImGui.SameLine(0, 0)
+        end
+        drawViewButton(sellLabel, false, function()
+            bulkSellByValue(1000)
+        end, 'Sell all inventory items worth 1pp or more. Skips items marked KEEP / Do Not Sell. Uses the current sort order.', 'primary')
+        ImGui.EndGroup()
     end
-    drawViewButton(sellLabel, false, function()
-        bulkSellByValue(1000)
-    end, 'Sell all inventory items worth 1pp or more. Skips items marked KEEP / Do Not Sell. Uses the current sort order.', 'primary')
-    ImGui.EndGroup()
 
     ImGui.NewLine()
 
@@ -2040,7 +2633,7 @@ end
 
 
 
-local function tryLoadHeaderFont()
+tryLoadHeaderFont = function()
     if headerFontLoaded then return end
     headerFontLoaded = true
 
@@ -2324,62 +2917,67 @@ local function drawHelpDialog()
 
         ImGui.TextWrapped('BEbags puts your bags and synced bank view into one cleaner window.')
 
-        ImGui.Spacing()
-        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Quick Overview')
-        ImGui.Separator()
-        ImGui.BulletText('Inventory shows all carried bag items in one place.')
-        ImGui.BulletText('Bank shows live contents when open, otherwise your last synced snapshot.')
-        ImGui.BulletText('Opening the bank auto-syncs a fresh snapshot for that character.')
-        ImGui.BulletText('Items can be sorted by bag order, value, or name.')
+        if ImGui.CollapsingHeader('Getting Started', ImGuiTreeNodeFlags.DefaultOpen) then
+            ImGui.BulletText('Inventory shows all carried bag items in one place.')
+            ImGui.BulletText('Bank shows live contents when open, otherwise your last synced snapshot.')
+            ImGui.BulletText('Opening the bank auto-syncs a fresh snapshot for that character.')
+            ImGui.BulletText('Switch views with Inventory / Bank on the main window.')
+        end
 
-        ImGui.Spacing()
-        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Controls')
-        ImGui.Separator()
-        ImGui.BulletText('Left Click: pick up, place, or swap an item.')
-        ImGui.BulletText('Double Left Click: inspect item.')
-        ImGui.BulletText('Right Click: use a clicky item.')
-        ImGui.BulletText('Ctrl + Right Click: sell full stack at a merchant.')
-        ImGui.BulletText('Alt + Right Click: toggle KEEP on an item.')
+        
+        
+        if ImGui.CollapsingHeader('Selling & KEEP') then
+            ImGui.BulletText('Sell All sells items worth 1pp+ at a merchant.')
+            ImGui.BulletText('Sell All respects KEEP flags and your current sort order.')
+            ImGui.BulletText('Ctrl + Right Click sells a full stack at a merchant.')
+            ImGui.TextColored(1.0, 0.85, 0.20, 1.0, 'Gold')
+            ImGui.SameLine()
+            ImGui.Text(' - item is worth 100pp or more')
+            ImGui.TextColored(0.60, 1.0, 0.60, 1.0, 'Green')
+            ImGui.SameLine()
+            ImGui.Text(' - item is worth 10pp or more')
+            ImGui.TextColored(0.82, 0.64, 1.0, 1.0, 'KEEP')
+            ImGui.SameLine()
+            ImGui.Text(' - protected from selling and glow')
+        end
 
-        ImGui.Spacing()
-        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Quick Actions')
-        ImGui.Separator()
-        ImGui.BulletText('Sell All: sells items worth 1pp+ at a merchant.')
-        ImGui.BulletText('Sell All respects KEEP flags and your current sort order.')
-        ImGui.BulletText('Deposit: moves your cursor item into the first valid slot.')
-        ImGui.BulletText('Destroy: permanently deletes the cursor item.')
-        ImGui.BulletText('Drop: places the cursor item on the ground.')
+        if ImGui.CollapsingHeader('Sorting') then
+            ImGui.BulletText('Bag Order')
+            ImGui.BulletText('High->Low')
+            ImGui.BulletText('Low->High')
+            ImGui.BulletText('Name A->Z')
+            ImGui.BulletText('Name Z->A')
+            ImGui.BulletText('Selling follows the current sort order.')
+        end
 
-        ImGui.Spacing()
-        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Sorting')
-        ImGui.Separator()
-        ImGui.BulletText('Bag Order')
-        ImGui.BulletText('High->Low')
-        ImGui.BulletText('Low->High')
-        ImGui.BulletText('Name A->Z')
-        ImGui.BulletText('Name Z->A')
+        if ImGui.CollapsingHeader('Bag Space Indicator') then
+            ImGui.BulletText('Optional number on the launcher icon shows remaining free bag slots.')
+            ImGui.BulletText('Color changes by your free-space percentage thresholds.')
+            ImGui.BulletText('Customize size, position, style, outline, and offsets in Config.')
+            ImGui.BulletText('The overlay is off by default and can be enabled any time.')
+        end
 
-        ImGui.Spacing()
-        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Value Highlights / KEEP')
-        ImGui.Separator()
-        ImGui.TextColored(1.0, 0.85, 0.20, 1.0, 'Gold')
-        ImGui.SameLine()
-        ImGui.Text(' - item is worth 100pp or more')
-        ImGui.TextColored(0.60, 1.0, 0.60, 1.0, 'Green')
-        ImGui.SameLine()
-        ImGui.Text(' - item is worth 10pp or more')
-        ImGui.TextColored(0.82, 0.64, 1.0, 1.0, 'KEEP')
-        ImGui.SameLine()
-        ImGui.Text(' - item will not be sold and will not glow')
-        ImGui.TextWrapped('Removing KEEP restores normal value highlighting.')
+        if ImGui.CollapsingHeader('Controls') then
+            ImGui.BulletText('Left Click: pick up, place, or swap an item.')
+            ImGui.BulletText('Double Left Click: inspect item.')
+            ImGui.BulletText('Right Click: use a clicky item.')
+            ImGui.BulletText('Alt + Right Click: toggle KEEP on an item.')
+            ImGui.BulletText('Set a hotkey in Config to toggle the main window.')
+        end
 
-        ImGui.Spacing()
-        ImGui.TextColored(1.0, 0.82, 0.25, 1.0, 'Tips')
-        ImGui.Separator()
-        ImGui.BulletText('Packed mode hides empty slots for a cleaner view.')
-        ImGui.BulletText('Deposit Mode can temporarily reveal empty slots if needed.')
-        ImGui.BulletText('Bank snapshot updates automatically when opened.')
-        ImGui.BulletText('Most settings save automatically.')
+                if ImGui.CollapsingHeader('Quick Tips', ImGuiTreeNodeFlags.DefaultOpen) then
+            ImGui.BulletText('Sort High->Low, then use Sell All to clean junk fast.')
+            ImGui.BulletText('Mark important items as KEEP so they never sell or glow.')
+            ImGui.BulletText('Use Packed mode for a tighter inventory view.')
+            ImGui.BulletText('Open your bank once to refresh its saved snapshot.')
+        end
+
+if ImGui.CollapsingHeader('More Tips') then
+            ImGui.BulletText('Deposit moves your cursor item into the first valid slot.')
+            ImGui.BulletText('Destroy permanently deletes the cursor item.')
+            ImGui.BulletText('Drop places the cursor item on the ground.')
+            ImGui.BulletText('Most settings save automatically.')
+        end
 
         ImGui.Spacing()
         if ImGui.SmallButton('Close Help') then
@@ -2493,6 +3091,11 @@ if loadBankCache() then
     echo('Loaded bank snapshot from ' .. bankCachePath)
 else
     echo('No bank snapshot found yet. Open your bank once to auto-sync it.')
+end
+
+if tostring(state.mainWindowHotkey or '') ~= '' then
+    applyMainWindowHotkey(state.mainWindowHotkey, true)
+    echo('Registered main window hotkey: ' .. state.mainWindowHotkey)
 end
 
 echo('Started. Use /BEbags config for the config UI.')
