@@ -123,3 +123,42 @@
 * No migration is performed for old config files
 * New config files will be generated automatically on save
 * This release focuses on performance, organization, and UI polish
+
+
+## v1.2.2
+
+### Added
+
+* Search bar (Find) to filter items by name in Inventory and Bank views
+* Optional Bags view (grouped per-bag layout, config-gated and disabled by default)
+* CTRL + Right Click bank deposit functionality
+  * Automatically stacks when possible
+  * Falls back to first available slot
+
+### Improved
+
+* Bags view integrates directly into main UI (no separate window)
+* Scrollbar automatically enabled while using Bags view
+* Field manual updated with new features and streamlined layout
+* README updated with clearer feature highlights and usage
+
+### Changed
+
+* Autosize feature fully removed
+* Width and height fudge settings removed with autosize
+* CTRL + Right Click behavior is now context-sensitive:
+  * Merchant → Sell
+  * Bank → Deposit
+
+### Fixed
+
+* Multiple UI alignment issues with search bar and layout
+* Bags view rendering issues and ImGui stack errors
+* Function scoping issues causing runtime errors
+* Stability improvements around click handling and view switching
+
+### Notes
+
+* Focused on usability, clarity, and community-driven features
+* No config migration performed
+* Foundation laid for future UI polish and bank bag grouping

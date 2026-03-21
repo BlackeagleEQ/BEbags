@@ -32,13 +32,10 @@ local state = {
     sortMode = 'bag',
     showValueGlow = true,
     showConfigWindow = false,
-    autoResizeMain = true,
     mainNoScrollbar = true,
     mainNoTitleBar = false,
     showMainValueBar = true,
     showMainWindow = true,
-    widthFudge = 56,
-    heightFudge = 20,
     lastError = '',
     statusMessage = 'Ready.',
     showLauncher = true,
@@ -46,6 +43,7 @@ local state = {
     pendingSell = nil,
     pendingSellQueue = nil,
     pendingSellQueueReadyAt = 0,
+    pendingBankDeposit = nil,
     showHelpDialog = false,
     activeView = 'inventory', -- inventory | bank
     bankCache = {
@@ -77,12 +75,16 @@ local state = {
     bagSpaceOverlayOutline = 'Heavy',
     bagSpaceOverlayOffsetX = 0,
     bagSpaceOverlayOffsetY = 0,
+    searchQuery = '',
+    showBagViewButton = false,
+    showBagViewWindow = false,
 }
 
 local mainWindowHotkeyInput = ''
 local lowBagSpaceGreenPercentInput = ''
 local lowBagSpaceYellowPercentInput = ''
 local lowBagSpaceRedPercentInput = ''
+local searchQueryInput = ''
 
 local headerFont = nil
 local headerFontLoaded = false
@@ -90,6 +92,9 @@ local headerFontLoaded = false
 local buildInventoryEntries
 local sortEntries
 local tryLoadHeaderFont
+local findFirstStackableBankTarget
+local findFirstEmptyBankSlot
+local queueBankDeposit
 
 
 local function clampPercent(v)
@@ -111,6 +116,31 @@ local function normalizeLowBagSpaceThresholds()
     lowBagSpaceGreenPercentInput = tostring(green)
     lowBagSpaceYellowPercentInput = tostring(yellow)
     lowBagSpaceRedPercentInput = tostring(red)
+end
+
+local function normalizeSearchQuery()
+    local query = tostring(state.searchQuery or '')
+    query = query:gsub('^%s+', ''):gsub('%s+$', '')
+    state.searchQuery = query
+    searchQueryInput = query
+end
+
+local function filterEntriesBySearch(entries)
+    local query = string.lower(tostring(state.searchQuery or ''))
+    if query == '' then
+        return entries
+    end
+
+    local filtered = {}
+    for _, entry in ipairs(entries or {}) do
+        if not entry.isEmpty then
+            local itemName = string.lower(tostring(entry.itemName or ''))
+            if string.find(itemName, query, 1, true) then
+                filtered[#filtered + 1] = entry
+            end
+        end
+    end
+    return filtered
 end
 
 
@@ -153,13 +183,13 @@ local function saveSettings()
     local keys = {
         'mode', 'hideEmptyInFull', 'rightClickEnabled', 'slotSize', 'columns',
         'showBagInfo', 'showItemBackground', 'sortMode', 'showValueGlow',
-        'showConfigWindow', 'autoResizeMain', 'mainNoScrollbar',
+        'showConfigWindow', 'mainNoScrollbar',
         'mainNoTitleBar', 'showMainValueBar', 'showMainWindow', 'showLauncher',
-        'showHelpDialog', 'widthFudge', 'heightFudge', 'activeView',
+        'showHelpDialog', 'activeView',
         'showBankSyncButton', 'showBankStatusText', 'depositMode', 'leftClickDelay',
         'diabloTheme', 'themePreset', 'doNotSellItems', 'mainWindowHotkey',
         'lowBagSpaceGreenPercent', 'lowBagSpaceYellowPercent', 'lowBagSpaceRedPercent',
-        'showSellAllButton', 'showBagSpaceOverlay', 'bagSpaceOverlaySize',
+        'showSellAllButton', 'showBagViewButton', 'showBagSpaceOverlay', 'bagSpaceOverlaySize',
         'bagSpaceOverlayStyle', 'bagSpaceOverlayPosition', 'bagSpaceOverlayOutline',
         'bagSpaceOverlayOffsetX', 'bagSpaceOverlayOffsetY',
     }
@@ -190,8 +220,6 @@ local function loadSettings()
     end
     state.slotSize = math.max(24, math.min(56, math.floor(tonumber(state.slotSize) or 40)))
     state.columns = math.max(4, math.min(24, math.floor(tonumber(state.columns) or 14)))
-    state.widthFudge = math.max(0, math.min(200, math.floor(tonumber(state.widthFudge) or 56)))
-    state.heightFudge = math.max(0, math.min(120, math.floor(tonumber(state.heightFudge) or 20)))
     if state.activeView ~= 'inventory' and state.activeView ~= 'bank' then
         state.activeView = 'inventory'
     end
@@ -213,6 +241,8 @@ local function loadSettings()
     state.mainWindowHotkey = tostring(state.mainWindowHotkey or '')
     state.capturingHotkey = false
     state.showSellAllButton = state.showSellAllButton ~= false
+    state.showBagViewButton = state.showBagViewButton == true
+    state.showBagViewWindow = state.showBagViewWindow == true and state.showBagViewButton
     if state.showBagSpaceOverlay == nil then
         state.showBagSpaceOverlay = false
     end
@@ -224,6 +254,7 @@ local function loadSettings()
     state.bagSpaceOverlayOffsetY = math.max(-20, math.min(20, math.floor(tonumber(state.bagSpaceOverlayOffsetY) or 0)))
     mainWindowHotkeyInput = state.mainWindowHotkey
     normalizeLowBagSpaceThresholds()
+    normalizeSearchQuery()
     return true
 end
 
@@ -457,15 +488,12 @@ local function resetSettings()
     state.sortMode = 'bag'
     state.showValueGlow = true
     state.showConfigWindow = false
-    state.autoResizeMain = true
     state.mainNoScrollbar = true
     state.mainNoTitleBar = false
     state.showMainValueBar = true
     state.showMainWindow = true
     state.showLauncher = true
     state.showHelpDialog = false
-    state.widthFudge = 56
-    state.heightFudge = 20
     state.activeView = 'inventory'
     state.showBankSyncButton = false
     state.showBankStatusText = false
@@ -477,6 +505,8 @@ local function resetSettings()
     state.doNotSellItems = {}
     state.mainWindowHotkey = ''
     state.capturingHotkey = false
+    state.showBagViewButton = false
+    state.showBagViewWindow = false
     mainWindowHotkeyInput = ''
     saveSettings()
     echo('Settings reset to defaults.')
@@ -704,6 +734,14 @@ end
 local function bankWindowOpen()
     return (safeCall(function() return mq.TLO.Window('BigBankWnd').Open() end, false) or false)
         or (safeCall(function() return mq.TLO.Window('BankWnd').Open() end, false) or false)
+end
+
+local function selectItemForBankDeposit(packNum, subslot)
+    mq.cmdf('/nomodkey /itemnotify in pack%d %d leftmouseup', packNum, subslot)
+end
+
+local function placeSelectedItemIntoBank(bankNum, subslot)
+    mq.cmdf('/nomodkey /itemnotify in bank%d %d leftmouseup', bankNum, subslot)
 end
 
 
@@ -1073,10 +1111,14 @@ local function buildBankEntries()
 end
 
 local function buildEntries()
+    local entries, bankMode
     if state.activeView == 'bank' then
-        return buildBankEntries()
+        entries, bankMode = buildBankEntries()
+    else
+        entries, bankMode = buildInventoryEntries(), 'live'
     end
-    return buildInventoryEntries(), 'live'
+    entries = filterEntriesBySearch(entries)
+    return entries, bankMode
 end
 
 function sortEntries(entries)
@@ -1270,7 +1312,7 @@ local function drawTooltip(entry, hasCursor, bankMode)
         if state.rightClickEnabled then
             ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Right click: clicky/use')
             if state.activeView ~= 'bank' then
-                ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Ctrl + right click: sell full stack to merchant')
+                ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Ctrl + right click: sell to merchant or deposit to bank')
             end
             ImGui.TextColored(0.80, 0.80, 0.80, 1.0, 'Alt + right click: toggle Do Not Sell')
         end
@@ -1419,10 +1461,16 @@ local function drawEntry(entry, index, hasCursor, bankMode)
         if altDown then
             toggleDoNotSellEntry(entry)
         elseif ctrlDown and state.activeView ~= 'bank' then
-            if isDoNotSellEntry(entry) then
-                echo(string.format('Protected item not sold: %s', entry.itemName or 'item'))
+            if merchantWindowOpen() then
+                if isDoNotSellEntry(entry) then
+                    echo(string.format('Protected item not sold: %s', entry.itemName or 'item'))
+                else
+                    queueMerchantSell(entry.packNum, entry.subslot, entry.itemName, entry.stack)
+                end
+            elseif bankWindowOpen() then
+                queueBankDeposit(entry.packNum, entry.subslot, entry.item)
             else
-                queueMerchantSell(entry.packNum, entry.subslot, entry.itemName, entry.stack)
+                itemnotifyRight(entry.packNum, entry.subslot)
             end
         else
             if state.activeView == 'bank' then
@@ -1513,7 +1561,7 @@ local function findFirstEmptyInventorySlot()
     return nil, nil
 end
 
-local function findFirstStackableBankTarget(cursorItem)
+findFirstStackableBankTarget = function(cursorItem)
     if not cursorItem or not isItemStackable(cursorItem) then
         return nil, nil
     end
@@ -1545,7 +1593,7 @@ local function findFirstStackableBankTarget(cursorItem)
     return nil, nil
 end
 
-local function findFirstEmptyBankSlot()
+findFirstEmptyBankSlot = function()
     for slotID = FIRST_BANK_SLOT, LAST_BANK_SLOT do
         local slotCount = getBagSlotCount(slotID)
         if slotCount > 0 then
@@ -1558,6 +1606,44 @@ local function findFirstEmptyBankSlot()
         end
     end
     return nil, nil
+end
+
+queueBankDeposit = function(packNum, subslot, item)
+    if not bankWindowOpen() then
+        echo('Bank window is not open.')
+        return false
+    end
+    if hasCursorItem() then
+        echo('Your cursor must be empty before using Ctrl + right click to bank an item.')
+        return false
+    end
+
+    local bankNum, bankSubslot = findFirstStackableBankTarget(item)
+    local actionText = nil
+    local itemName = getItemName(item, 'item') or 'item'
+    if bankNum and bankSubslot then
+        actionText = string.format('into existing stack in Bank %d, Slot %d', bankNum, bankSubslot)
+    else
+        bankNum, bankSubslot = findFirstEmptyBankSlot()
+        if not bankNum or not bankSubslot then
+            echo('No empty bank bag slots were found.')
+            return false
+        end
+        actionText = string.format('into Bank %d, Slot %d', bankNum, bankSubslot)
+    end
+
+    selectItemForBankDeposit(packNum, subslot)
+    state.pendingBankDeposit = {
+        packNum = packNum,
+        subslot = subslot,
+        bankNum = bankNum,
+        bankSubslot = bankSubslot,
+        itemName = itemName,
+        readyAt = os.clock() + 0.14,
+        actionText = actionText,
+    }
+    echo(string.format('Queued bank deposit for %s %s.', itemName, actionText))
+    return true
 end
 
 local function performAutoDeposit()
@@ -1695,35 +1781,6 @@ local function drawTopSortButtons()
     end
 end
 
-local function setMainWindowSize(entryCount)
-    if not state.autoResizeMain then
-        return
-    end
-
-    local cols = math.max(1, state.columns)
-    local rows = math.max(1, math.ceil(entryCount / cols))
-
-    local itemSpacingX = 4
-    local itemSpacingY = 4
-    local scrollbarAllowance = state.mainNoScrollbar and 0 or 20
-    local titleBarAllowance = state.mainNoTitleBar and 0 or 28
-    local valueBarAllowance = state.showMainValueBar and 26 or 0
-    local toolbarAllowance = 86
-
-    local width = (cols * state.slotSize)
-        + ((cols - 1) * itemSpacingX)
-        + scrollbarAllowance
-        + state.widthFudge
-
-    local height = (rows * state.slotSize)
-        + ((rows - 1) * itemSpacingY)
-        + titleBarAllowance
-        + valueBarAllowance
-        + toolbarAllowance
-        + state.heightFudge
-
-    ImGui.SetNextWindowSize(width, height, ImGuiCond.Always)
-end
 
 local pushDiabloWindowStyle
 local popDiabloWindowStyle
@@ -1801,6 +1858,19 @@ local function drawConfigWindow(entries, bankMode)
                 local nextShowSellAll = not state.showSellAllButton
                 doAction(nextShowSellAll and 'Sell All button enabled.' or 'Sell All button hidden.', function()
                     state.showSellAllButton = nextShowSellAll
+                end)
+            end
+
+            ImGui.Spacing()
+
+            local bagViewToggleLabel = state.showBagViewButton and '[X] Show Bag View Button' or '[ ] Show Bag View Button'
+            if ImGui.SmallButton(bagViewToggleLabel) then
+                local nextShowBagView = not state.showBagViewButton
+                doAction(nextShowBagView and 'Bag View button enabled.' or 'Bag View button hidden.', function()
+                    state.showBagViewButton = nextShowBagView
+                    if not nextShowBagView then
+                        state.showBagViewWindow = false
+                    end
                 end)
             end
 
@@ -2015,22 +2085,6 @@ local function drawConfigWindow(entries, bankMode)
             ImGui.SameLine()
             ImGui.TextDisabled('Slot Size: ' .. tostring(state.slotSize))
 
-            if ImGui.SmallButton('Width -8') then doAction('Width fudge decreased.', function() state.widthFudge = math.max(0, state.widthFudge - 8) end) end
-            ImGui.SameLine()
-            if ImGui.SmallButton('Width +8') then doAction('Width fudge increased.', function() state.widthFudge = math.min(200, state.widthFudge + 8) end) end
-            ImGui.SameLine()
-            ImGui.TextDisabled('Width Fudge: ' .. tostring(state.widthFudge))
-
-            if ImGui.SmallButton('Height -4') then doAction('Height fudge decreased.', function() state.heightFudge = math.max(0, state.heightFudge - 4) end) end
-            ImGui.SameLine()
-            if ImGui.SmallButton('Height +4') then doAction('Height fudge increased.', function() state.heightFudge = math.min(120, state.heightFudge + 4) end) end
-            ImGui.SameLine()
-            ImGui.TextDisabled('Height Fudge: ' .. tostring(state.heightFudge))
-
-            if ImGui.SmallButton(state.autoResizeMain and 'Auto Resize: ON' or 'Auto Resize: OFF') then
-                doAction('Toggled auto resize.', function() state.autoResizeMain = not state.autoResizeMain end)
-            end
-            ImGui.SameLine()
             if ImGui.SmallButton(state.mainNoScrollbar and 'Scrollbar: OFF' or 'Scrollbar: ON') then
                 doAction('Toggled main scrollbar.', function() state.mainNoScrollbar = not state.mainNoScrollbar end)
             end
@@ -2455,9 +2509,19 @@ local function drawViewButtons(bankMode)
     ImGui.SameLine()
     drawViewButton('Bank', state.activeView == 'bank', function()
         state.activeView = 'bank'
+        state.showBagViewWindow = false
         saveSettings()
         echo('Switched to bank view.')
     end, 'Show live bank contents while bank is open, otherwise your last synced bank snapshot')
+
+    if state.showBagViewButton and state.activeView == 'inventory' then
+        ImGui.SameLine()
+        drawViewButton('Bags', state.showBagViewWindow, function()
+            state.showBagViewWindow = not state.showBagViewWindow
+            saveSettings()
+            echo(state.showBagViewWindow and 'Switched to individual bag view.' or 'Switched to combined bag view.')
+        end, 'Switch between the combined inventory grid and individual bag sections')
+    end
 
     if rightAnchorX < ImGui.GetCursorPosX() + 12 then
         rightAnchorX = ImGui.GetCursorPosX() + 12
@@ -2787,8 +2851,62 @@ local function drawWindowCloseX(targetKey, closeMessage)
     return false
 end
 
+local function drawSearchBar(entries)
+    local currentQuery = tostring(state.searchQuery or '')
+    local resultCount = #entries
+
+    ImGui.AlignTextToFramePadding()
+    ImGui.TextColored(0.82, 0.88, 0.96, 1.0, 'Find')
+    ImGui.SameLine()
+    ImGui.SetNextItemWidth(160)
+    local ok, changed, newValue = pcall(function()
+        return ImGui.InputText('##BEbagsSearchQuery', searchQueryInput or currentQuery)
+    end)
+    if ok then
+        local nextQuery = currentQuery
+        local didChange = false
+        if type(changed) == 'boolean' then
+            didChange = changed
+            if didChange and type(newValue) == 'string' then
+                nextQuery = newValue
+            end
+        elseif type(changed) == 'string' then
+            nextQuery = changed
+            didChange = nextQuery ~= currentQuery
+        end
+        if didChange then
+            state.searchQuery = nextQuery
+            normalizeSearchQuery()
+        else
+            searchQueryInput = currentQuery
+        end
+    else
+        searchQueryInput = currentQuery
+    end
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('Filter the visible grid by item name')
+    end
+
+    ImGui.SameLine()
+    if ImGui.SmallButton('Clear##BEbagsSearchClear') then
+        state.searchQuery = ''
+        normalizeSearchQuery()
+    end
+
+    ImGui.SameLine()
+    if currentQuery ~= '' then
+        ImGui.TextDisabled(string.format('%d match%s', resultCount, resultCount == 1 and '' or 'es'))
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('Showing items whose names contain: ' .. currentQuery)
+        end
+    else
+        ImGui.TextDisabled('Find item names')
+    end
+end
+
+local drawInventoryBagGroupsInMainWindow
+
 local function drawMainWindow(entries, bankMode)
-    setMainWindowSize(#entries)
 
     local flags = bit32.bor(ImGuiWindowFlags.NoTitleBar, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)
 
@@ -2803,7 +2921,8 @@ local function drawMainWindow(entries, bankMode)
         end
 
         local contentChildFlags = 0
-        if state.mainNoScrollbar then
+        local forceScrollbar = state.showBagViewWindow and state.activeView == 'inventory'
+        if state.mainNoScrollbar and not forceScrollbar then
             contentChildFlags = bit32.bor(contentChildFlags, ImGuiWindowFlags.NoScrollbar, ImGuiWindowFlags.NoScrollWithMouse)
         else
             contentChildFlags = bit32.bor(contentChildFlags, ImGuiWindowFlags.AlwaysVerticalScrollbar)
@@ -2822,14 +2941,20 @@ local function drawMainWindow(entries, bankMode)
 
         drawViewButtons(bankMode)
         ImGui.Dummy(0, 3)
+        drawSearchBar(entries)
+        ImGui.Dummy(0, 3)
         ImGui.Separator()
         ImGui.Dummy(0, 2)
 
-        local cursorPresent = hasCursorItem()
-        for i, entry in ipairs(entries) do
-            drawEntry(entry, i, cursorPresent, bankMode)
-            if (i % state.columns) ~= 0 then
-                ImGui.SameLine()
+        if state.showBagViewWindow and state.activeView == 'inventory' then
+            drawInventoryBagGroupsInMainWindow()
+        else
+            local cursorPresent = hasCursorItem()
+            for i, entry in ipairs(entries) do
+                drawEntry(entry, i, cursorPresent, bankMode)
+                if (i % state.columns) ~= 0 then
+                    ImGui.SameLine()
+                end
             end
         end
 
@@ -2837,6 +2962,107 @@ local function drawMainWindow(entries, bankMode)
     end
     ImGui.End()
     popDiabloWindowStyle(pushedColors, pushedVars)
+end
+
+
+local function buildInventoryBagViewData()
+    local bags = {}
+    local query = string.lower(tostring(state.searchQuery or ''))
+    local searching = query ~= ''
+
+    for bagSlot = FIRST_BAG_SLOT, LAST_BAG_SLOT do
+        local packNum = bagSlot - 22
+        local bagName = getInventoryBagName(bagSlot)
+        local slotCount = getBagSlotCount(bagSlot)
+        local entries = {}
+
+        for subslot = 1, slotCount do
+            local item = getBagItem(bagSlot, subslot)
+            local isEmpty = (item == nil)
+            local itemName = getItemName(item, '(empty)')
+            local includeEntry = true
+
+            if searching then
+                if isEmpty then
+                    includeEntry = false
+                else
+                    includeEntry = string.find(string.lower(tostring(itemName or '')), query, 1, true) ~= nil
+                end
+            end
+
+            if includeEntry then
+                local stack = math.max(getItemStack(item), 1)
+                local itemValue = getItemValue(item)
+                local itemID = getItemID(item)
+                local doNotSellKey = getDoNotSellKeyFromItem(item)
+                entries[#entries + 1] = {
+                    source = 'inventory',
+                    interactive = true,
+                    packNum = packNum,
+                    subslot = subslot,
+                    bagName = bagName,
+                    item = item,
+                    isEmpty = isEmpty,
+                    order = subslot,
+                    itemName = itemName,
+                    stack = stack,
+                    itemID = itemID,
+                    doNotSellKey = doNotSellKey,
+                    doNotSell = doNotSellKey ~= nil and state.doNotSellItems[doNotSellKey] == true or false,
+                    itemValue = itemValue,
+                    totalValue = itemValue * stack,
+                    iconID = getItemIcon(item),
+                }
+            end
+        end
+
+        if (not searching) or #entries > 0 then
+            bags[#bags + 1] = {
+                packNum = packNum,
+                bagName = bagName,
+                slotCount = slotCount,
+                entries = entries,
+            }
+        end
+    end
+    return bags
+end
+
+drawInventoryBagGroupsInMainWindow = function()
+    local bags = buildInventoryBagViewData()
+    local cursorPresent = hasCursorItem()
+    local style = ImGui.GetStyle()
+    local spacing = style.ItemSpacing.x or 4
+    local slotSize = state.slotSize or 40
+    local avail = ImGui.GetContentRegionAvail()
+    local availWidth = type(avail) == 'number' and avail or (avail.x or 0)
+    local perRow = math.max(1, math.floor((availWidth + spacing) / (slotSize + spacing)))
+    local searching = tostring(state.searchQuery or '') ~= ''
+
+    if searching then
+        ImGui.TextDisabled('Individual bags shown in bag order. Search shows matching items only.')
+    else
+        ImGui.TextDisabled('Individual bags shown in bag order. This view always shows every slot.')
+    end
+    ImGui.Dummy(0, 4)
+
+    for _, bag in ipairs(bags) do
+        ImGui.Text(string.format('Pack %d%s', bag.packNum, (bag.bagName and bag.bagName ~= '' and bag.bagName ~= ('Pack ' .. tostring(bag.packNum))) and (' - ' .. bag.bagName) or ''))
+        ImGui.Dummy(0, 2)
+
+        for i, entry in ipairs(bag.entries) do
+            drawEntry(entry, i, cursorPresent, 'live')
+            if (i % perRow) ~= 0 and i < #bag.entries then
+                ImGui.SameLine()
+            end
+        end
+
+        ImGui.Dummy(0, 8)
+    end
+
+    if searching and #bags == 0 then
+        ImGui.TextDisabled('No bag items match your search.')
+    end
 end
 
 local function processPendingLeftClick()
@@ -2892,6 +3118,33 @@ local function processPendingSell()
     end
 end
 
+local function processPendingBankDeposit()
+    if not state.pendingBankDeposit then
+        return
+    end
+
+    if os.clock() < (state.pendingBankDeposit.readyAt or 0) then
+        return
+    end
+
+    if not bankWindowOpen() then
+        echo('Bank window closed before deposit completed.')
+        state.pendingBankDeposit = nil
+        return
+    end
+
+    if not hasCursorItem() then
+        echo('Bank deposit did not pick up the source item.')
+        state.pendingBankDeposit = nil
+        return
+    end
+
+    placeSelectedItemIntoBank(state.pendingBankDeposit.bankNum, state.pendingBankDeposit.bankSubslot)
+    state.statusMessage = string.format('Depositing %s %s.', state.pendingBankDeposit.itemName or 'item', state.pendingBankDeposit.actionText or 'into bank')
+    echo(string.format('Deposited %s %s.', state.pendingBankDeposit.itemName or 'item', state.pendingBankDeposit.actionText or 'into bank'))
+    state.pendingBankDeposit = nil
+end
+
 local function drawHelpDialog()
     if not state.showHelpDialog then
         return
@@ -2915,30 +3168,52 @@ local function drawHelpDialog()
 
         ImGui.BeginChild('##help_content', 0, 0, false)
 
-        ImGui.TextWrapped('BEbags puts your bags and synced bank view into one cleaner window.')
+        ImGui.TextWrapped('BEbags combines your carried bag items and bank snapshot into one cleaner window.')
 
         if ImGui.CollapsingHeader('Getting Started', ImGuiTreeNodeFlags.DefaultOpen) then
-            ImGui.BulletText('Inventory shows all carried bag items in one place.')
+            ImGui.BulletText('Inventory shows your carried bag items in one combined view.')
             ImGui.BulletText('Bank shows live contents when open, otherwise your last synced snapshot.')
-            ImGui.BulletText('Opening the bank auto-syncs a fresh snapshot for that character.')
-            ImGui.BulletText('Switch views with Inventory / Bank on the main window.')
+            ImGui.BulletText('Opening the bank refreshes the saved snapshot automatically.')
+            ImGui.BulletText('Use Inventory / Bank to swap views.')
+            ImGui.BulletText('Use Find to filter visible items by name.')
         end
 
-        
-        
+        if ImGui.CollapsingHeader('Views') then
+            ImGui.BulletText('Default view shows all bag contents in one grid.')
+            ImGui.BulletText('Optional Bags view splits items by individual bag.')
+            ImGui.BulletText('The Bags button is hidden until enabled in Config.')
+            ImGui.BulletText('Bags view currently applies to Inventory only.')
+            ImGui.BulletText('Bags view always shows a scrollbar.')
+        end
+
         if ImGui.CollapsingHeader('Selling & KEEP') then
             ImGui.BulletText('Sell All sells items worth 1pp+ at a merchant.')
-            ImGui.BulletText('Sell All respects KEEP flags and your current sort order.')
-            ImGui.BulletText('Ctrl + Right Click sells a full stack at a merchant.')
+            ImGui.BulletText('Sell All respects KEEP flags and current sort order.')
+            ImGui.BulletText('Ctrl + Right Click at a merchant sells the clicked item or stack.')
             ImGui.TextColored(1.0, 0.85, 0.20, 1.0, 'Gold')
             ImGui.SameLine()
-            ImGui.Text(' - item is worth 100pp or more')
+            ImGui.Text(' - worth 100pp or more')
             ImGui.TextColored(0.60, 1.0, 0.60, 1.0, 'Green')
             ImGui.SameLine()
-            ImGui.Text(' - item is worth 10pp or more')
+            ImGui.Text(' - worth 10pp or more')
             ImGui.TextColored(0.82, 0.64, 1.0, 1.0, 'KEEP')
             ImGui.SameLine()
             ImGui.Text(' - protected from selling and glow')
+        end
+
+        if ImGui.CollapsingHeader('Banking') then
+            ImGui.BulletText('Ctrl + Right Click at the bank deposits the clicked inventory item.')
+            ImGui.BulletText('Stackable items try to merge into an existing bank stack first.')
+            ImGui.BulletText('If no stack fits, the item goes to the first open bank slot.')
+            ImGui.BulletText('This only works while the bank is open.')
+        end
+
+        if ImGui.CollapsingHeader('Controls') then
+            ImGui.BulletText('Left Click: pick up, place, or swap an item.')
+            ImGui.BulletText('Double Left Click: inspect item.')
+            ImGui.BulletText('Right Click: use a clicky item.')
+            ImGui.BulletText('Alt + Right Click: toggle KEEP on an item.')
+            ImGui.BulletText('Set a hotkey in Config to toggle the main window.')
         end
 
         if ImGui.CollapsingHeader('Sorting') then
@@ -2951,32 +3226,18 @@ local function drawHelpDialog()
         end
 
         if ImGui.CollapsingHeader('Bag Space Indicator') then
-            ImGui.BulletText('Optional number on the launcher icon shows remaining free bag slots.')
-            ImGui.BulletText('Color changes by your free-space percentage thresholds.')
+            ImGui.BulletText('Optional launcher number shows remaining free bag slots.')
+            ImGui.BulletText('Color changes by your free-space thresholds.')
             ImGui.BulletText('Customize size, position, style, outline, and offsets in Config.')
-            ImGui.BulletText('The overlay is off by default and can be enabled any time.')
+            ImGui.BulletText('The overlay is off by default.')
         end
 
-        if ImGui.CollapsingHeader('Controls') then
-            ImGui.BulletText('Left Click: pick up, place, or swap an item.')
-            ImGui.BulletText('Double Left Click: inspect item.')
-            ImGui.BulletText('Right Click: use a clicky item.')
-            ImGui.BulletText('Alt + Right Click: toggle KEEP on an item.')
-            ImGui.BulletText('Set a hotkey in Config to toggle the main window.')
-        end
-
-                if ImGui.CollapsingHeader('Quick Tips', ImGuiTreeNodeFlags.DefaultOpen) then
+        if ImGui.CollapsingHeader('Quick Tips', ImGuiTreeNodeFlags.DefaultOpen) then
             ImGui.BulletText('Sort High->Low, then use Sell All to clean junk fast.')
-            ImGui.BulletText('Mark important items as KEEP so they never sell or glow.')
-            ImGui.BulletText('Use Packed mode for a tighter inventory view.')
+            ImGui.BulletText('Mark important items as KEEP so they never sell.')
+            ImGui.BulletText('Use Find to locate items quickly.')
             ImGui.BulletText('Open your bank once to refresh its saved snapshot.')
-        end
-
-if ImGui.CollapsingHeader('More Tips') then
-            ImGui.BulletText('Deposit moves your cursor item into the first valid slot.')
-            ImGui.BulletText('Destroy permanently deletes the cursor item.')
-            ImGui.BulletText('Drop places the cursor item on the ground.')
-            ImGui.BulletText('Most settings save automatically.')
+            ImGui.BulletText('Autosize was removed; resize the window manually.')
         end
 
         ImGui.Spacing()
@@ -2998,6 +3259,7 @@ end
 local function drawUI()
     local ok, err = pcall(function()
         processPendingSell()
+        processPendingBankDeposit()
         processPendingLeftClick()
         pulseDepositMode()
         local entries, bankMode = buildEntries()
@@ -3050,10 +3312,6 @@ mq.bind('/BEbags', function(line)
     elseif arg == 'reset' then
         resetSettings()
         echo('Settings reset.')
-    elseif arg == 'autoresize on' then
-        doAction('Auto resize enabled.', function() state.autoResizeMain = true end)
-    elseif arg == 'autoresize off' then
-        doAction('Auto resize disabled.', function() state.autoResizeMain = false end)
     elseif arg == 'value on' then
         doAction('Main value bar enabled.', function() state.showMainValueBar = true end)
     elseif arg == 'value off' then
@@ -3077,7 +3335,7 @@ mq.bind('/BEbags', function(line)
         saveSettings()
         echo(state.showHelpDialog and 'Help dialog opened.' or 'Help dialog closed.')
     else
-        echo('Usage: /BEbags config | packed | full | showempty | hideempty | inventory | bank | deposit | destroy | depositmode | syncbank | save | reset | autoresize on|off | value on|off | right on|off | show | hide | toggle | launcher show|hide | help')
+        echo('Usage: /BEbags config | packed | full | showempty | hideempty | inventory | bank | deposit | destroy | depositmode | syncbank | save | reset | value on|off | right on|off | show | hide | toggle | launcher show|hide | help')
     end
 end)
 
